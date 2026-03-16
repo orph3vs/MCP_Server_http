@@ -20,6 +20,7 @@ class CostLoggerTests(unittest.TestCase):
                 cost=0.0123,
                 latency=210.5,
                 score=87.5,
+                question_summary="개인정보 제재 기준 질문",
                 question_intent="illegality",
                 nlic_calls=4,
                 law_search_count=2,
@@ -31,6 +32,7 @@ class CostLoggerTests(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded.request_id, "req-1")
             self.assertEqual(loaded.risk_level, "HIGH")
+            self.assertEqual(loaded.question_summary, "개인정보 제재 기준 질문")
             self.assertEqual(loaded.question_intent, "illegality")
             self.assertEqual(loaded.nlic_calls, 4)
             self.assertTrue(loaded.has_precedent)

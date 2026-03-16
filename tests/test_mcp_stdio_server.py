@@ -1,7 +1,10 @@
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
+from src.cost_logger import CostLogger
 from src.mcp_stdio_server import McpServer, _read_message, _write_message
 from src.request_pipeline import PipelineResponse
 
@@ -29,6 +32,7 @@ class FakeLawApi:
 class FakePipeline:
     def __init__(self):
         self.law_api = FakeLawApi()
+        self.logger = CostLogger(db_path=str(Path(tempfile.gettempdir()) / "codex-mcp-tool-test.db"))
 
     def process(self, req):
         return PipelineResponse(
@@ -47,6 +51,20 @@ class FakePipeline:
             score=83.0,
             latency_ms=12.3,
             error=None,
+        )
+
+
+class FakeErrorPipeline(FakePipeline):
+    def process(self, req):
+        return PipelineResponse(
+            request_id=req.request_id or "req-err",
+            risk_level="LOW",
+            mode="error:LawAPI",
+            answer="",
+            citations={},
+            score=0.0,
+            latency_ms=12.3,
+            error={"stage": "LawAPI", "message": "empty_law_data"},
         )
 
 
@@ -108,6 +126,55 @@ class McpServerTests(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         payload = response["result"]["structuredContent"]
         self.assertEqual(payload["answer"], "테스트 응답")
+
+    def test_tools_call_answer_with_citations_returns_error_when_pipeline_fails(self):
+        server = McpServer(pipeline=FakeErrorPipeline())
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}},
+            }
+        )
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "answer_with_citations", "arguments": {"user_query": "개인정보 보호법 제1조 설명"}},
+            }
+        )
+
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"]["error"], "empty_law_data")
+
+    def test_tools_call_search_law_creates_tool_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = FakePipeline()
+            pipeline.logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            server = McpServer(pipeline=pipeline)
+            server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}},
+                }
+            )
+            server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "search_law", "arguments": {"query": "개인정보 보호법"}},
+                }
+            )
+
+            logged = pipeline.logger.list_recent(limit=1)[0]
+            self.assertEqual(logged.entry_type, "tool")
+            self.assertEqual(logged.tool_name, "search_law")
+            self.assertEqual(logged.law_search_count, 1)
 
     def test_tools_call_search_precedent(self):
         self._initialize()

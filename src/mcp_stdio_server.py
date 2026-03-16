@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.request_pipeline import PipelineRequest, RequestPipeline
+from src.cost_logger import CostLogEntry
 
 
 JSONRPC_VERSION = "2.0"
@@ -203,6 +204,65 @@ class McpServer:
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     @staticmethod
+    def _tool_input_summary(tool_name: str, arguments: Dict[str, Any]) -> str:
+        if tool_name in ("ask", "answer_with_citations"):
+            return str(arguments.get("user_query", "")).strip()
+        if tool_name == "search_law":
+            return str(arguments.get("query", "")).strip()
+        if tool_name == "get_article":
+            return f"{arguments.get('law_id', '')} {arguments.get('article_no', '')}".strip()
+        if tool_name == "get_version":
+            return str(arguments.get("law_id", "")).strip()
+        if tool_name == "validate_article":
+            return f"{arguments.get('law_id', '')} {arguments.get('article_no', '')}".strip()
+        if tool_name == "search_precedent":
+            return str(arguments.get("query", "")).strip()
+        if tool_name == "get_precedent":
+            return str(arguments.get("precedent_id", "")).strip()
+        return tool_name
+
+    def _log_tool_call(
+        self,
+        *,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        latency_ms: float,
+        error_stage: Optional[str] = None,
+    ) -> None:
+        nlic_tools = {
+            "search_law",
+            "get_article",
+            "get_version",
+            "validate_article",
+            "search_precedent",
+            "get_precedent",
+        }
+        self.pipeline.logger.log_request(
+            CostLogEntry(
+                request_id=str(arguments.get("request_id", "")).strip() or f"tool-{int(time.time() * 1000)}",
+                risk_level="LOW",
+                mode="tool" if not error_stage else f"error:{error_stage}",
+                tokens_in=0,
+                tokens_out=0,
+                cost=0.0,
+                latency=latency_ms,
+                score=0.0,
+                entry_type="tool",
+                tool_name=tool_name,
+                question_summary=self._tool_input_summary(tool_name, arguments),
+                question_intent="tool",
+                error_stage=error_stage,
+                tool_calls=1,
+                nlic_calls=1 if tool_name in nlic_tools else 0,
+                law_search_count=1 if tool_name == "search_law" else 0,
+                version_fetch_count=1 if tool_name == "get_version" else 0,
+                article_fetch_count=1 if tool_name in {"get_article", "validate_article"} else 0,
+                precedent_search_count=1 if tool_name == "search_precedent" else 0,
+                precedent_fetch_count=1 if tool_name == "get_precedent" else 0,
+            )
+        )
+
+    @staticmethod
     def _tool_summary(tool_name: str, payload: Dict[str, Any]) -> str:
         if tool_name in ("ask", "answer_with_citations"):
             answer = str(payload.get("answer", "")).strip()
@@ -331,6 +391,7 @@ class McpServer:
         if not isinstance(arguments, dict):
             raise McpProtocolError(-32602, "Tool arguments must be an object")
         _log(f"tools/call name={tool_name}")
+        started = time.perf_counter()
 
         try:
             if tool_name in ("ask", "answer_with_citations"):
@@ -342,6 +403,15 @@ class McpServer:
                     )
                 )
                 payload = asdict(result)
+                if payload.get("error"):
+                    error = payload.get("error") or {}
+                    stage = str(error.get("stage", "Pipeline"))
+                    message = str(error.get("message", "tool_execution_failed"))
+                    _log(f"tool_result_error name={tool_name} stage={stage} message={message}")
+                    return self._jsonrpc_result(
+                        request_id,
+                        self._tool_failure(message, payload),
+                    )
             elif tool_name == "search_law":
                 payload = self.pipeline.law_api.search_law(self._require_string(arguments, "query"))
             elif tool_name == "get_article":
@@ -367,10 +437,29 @@ class McpServer:
         except McpProtocolError:
             raise
         except ValueError as exc:
+            self._log_tool_call(
+                tool_name=tool_name,
+                arguments=arguments,
+                latency_ms=round((time.perf_counter() - started) * 1000, 3),
+                error_stage="Validation",
+            )
             return self._jsonrpc_result(request_id, self._tool_failure(str(exc)))
         except Exception as exc:
+            self._log_tool_call(
+                tool_name=tool_name,
+                arguments=arguments,
+                latency_ms=round((time.perf_counter() - started) * 1000, 3),
+                error_stage="ToolRuntime",
+            )
+            _log(f"tool_result_error name={tool_name} stage=ToolRuntime message={str(exc)}")
             return self._jsonrpc_result(request_id, self._tool_failure("tool_execution_failed", {"detail": str(exc)}))
 
+        if tool_name not in ("ask", "answer_with_citations"):
+            self._log_tool_call(
+                tool_name=tool_name,
+                arguments=arguments,
+                latency_ms=round((time.perf_counter() - started) * 1000, 3),
+            )
         return self._jsonrpc_result(request_id, self._tool_success(tool_name, payload))
 
     def handle_message(self, message: Dict[str, Any]) -> Optional[Dict[str, Any]]:

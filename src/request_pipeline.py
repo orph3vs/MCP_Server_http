@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from src.answer_composer import AnswerComposer, AnswerCompositionInput
 from src.confidence_scoring import ConfidenceInput, ConfidenceScoringEngine
 from src.cost_logger import CostLogEntry, CostLogger
+from src.law_hint_suggestions import LawHintSuggestionStore
 from src.multi_agent_review import MultiAgentReviewPipeline
 from src.nlic_api_wrapper import NlicApiWrapper
 from src.prompt_loader import build_request_prompt, extract_prompt_policy
@@ -41,6 +42,15 @@ class PipelineStageError(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.message = message
+
+
+@dataclass(frozen=True)
+class LawSearchAnalysis:
+    question_intent: str
+    issue_terms: List[str]
+    related_law_queries: List[str]
+    search_queries: List[str]
+    proposed_keywords: List[str]
 
 
 class RequestPipeline:
@@ -84,6 +94,15 @@ class RequestPipeline:
         "공공기록물 관리에 관한 법률": ("공공기록물", "기록물", "문서보존", "행정기록", "아카이브"),
     }
 
+    _RELATED_LAW_HINTS["도서관법"] = (
+        "도서관",
+        "작은도서관",
+        "사서",
+        "열람",
+        "도서관 프로그램",
+        "독서문화",
+    )
+
     _QUESTION_INTENT_KEYWORDS = {
         "difference": ("차이", "구분", "비교", "다른 점"),
         "requirements": ("요건", "조건", "기준", "해당", "충족"),
@@ -108,6 +127,7 @@ class RequestPipeline:
         agent_engine: Optional[MultiAgentReviewPipeline] = None,
         scorer: Optional[ConfidenceScoringEngine] = None,
         logger: Optional[CostLogger] = None,
+        suggestion_store: Optional[LawHintSuggestionStore] = None,
     ) -> None:
         self.risk_classifier = risk_classifier or RiskClassifier()
         self.law_api = law_api or NlicApiWrapper()
@@ -115,6 +135,7 @@ class RequestPipeline:
         self.answer_composer = AnswerComposer()
         self.scorer = scorer or ConfidenceScoringEngine()
         self.logger = logger or CostLogger()
+        self.suggestion_store = suggestion_store or LawHintSuggestionStore()
 
     def _validate(self, answer: str, citations: Dict[str, Any]) -> None:
         if not answer.strip():
@@ -142,6 +163,10 @@ class RequestPipeline:
         if len(compact) <= max_chars:
             return compact
         return compact[: max_chars - 3].rstrip() + "..."
+
+    @classmethod
+    def _question_summary(cls, user_query: str, max_chars: int = 60) -> str:
+        return cls._truncate_text(user_query, max_chars=max_chars)
 
     @staticmethod
     def _clean_text(text: str) -> str:
@@ -217,6 +242,100 @@ class RequestPipeline:
         normalized = cls._clean_text(user_query)
         return any(keyword in normalized for keyword in cls._PRECEDENT_REQUEST_KEYWORDS)
 
+    @classmethod
+    def _extract_issue_query_terms(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        issue_hints = {
+            "개인정보": ("개인정보", "성명", "이름", "연락처", "휴대폰", "핸드폰", "전화번호"),
+            "출석부": ("출석부", "출석 명단", "참석자 명단", "명단", "참가자 명단"),
+            "마스킹": ("마스킹", "가림", "익명화", "비식별", "수정테이프", "홍**"),
+            "증빙서류": ("증빙서류", "정산서류", "정산 증빙", "첨부서류", "사본"),
+            "보관": ("보관", "보유", "파기", "제출"),
+            "동의고지": ("동의", "고지", "안내", "제공"),
+        }
+        found_terms: List[str] = []
+        for canonical, hints in issue_hints.items():
+            if any(hint in normalized for hint in hints):
+                found_terms.append(canonical)
+        return found_terms
+
+    @classmethod
+    def _extract_hint_candidate_keywords(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        stopwords = {
+            "설명",
+            "알려줘",
+            "알려주세요",
+            "문의",
+            "경우",
+            "관련",
+            "기준",
+            "질문",
+            "프로그램",
+            "진행",
+            "대상",
+            "처리",
+            "제출",
+            "작성",
+        }
+        candidates = re.findall(r"[가-힣A-Za-z]{2,12}", normalized)
+        filtered = [
+            candidate
+            for candidate in candidates
+            if candidate not in stopwords and not candidate.endswith("합니다")
+        ]
+        return filtered[:8]
+
+    def _resolved_related_law_queries(self, user_query: str) -> List[str]:
+        queries = self._related_law_queries(user_query)
+        normalized = self._clean_text(user_query).lower()
+        for law_name, hints in self.suggestion_store.approved_overrides().items():
+            if any(hint.lower() in normalized for hint in hints):
+                queries.append(law_name)
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            if query and query not in seen:
+                seen.add(query)
+                deduped.append(query)
+        return deduped
+
+    def _analyze_law_search(self, user_query: str) -> LawSearchAnalysis:
+        issue_terms = self._extract_issue_query_terms(user_query)
+        related_law_queries = self._resolved_related_law_queries(user_query)
+        search_queries = self._law_search_queries(
+            user_query,
+            related_law_queries=related_law_queries,
+        )
+        proposed_keywords = issue_terms + self._extract_hint_candidate_keywords(user_query)
+        return LawSearchAnalysis(
+            question_intent=self._question_intent(user_query),
+            issue_terms=issue_terms,
+            related_law_queries=related_law_queries,
+            search_queries=search_queries,
+            proposed_keywords=proposed_keywords,
+        )
+
+    def _record_law_hint_suggestion(
+        self,
+        *,
+        request_id: str,
+        req: PipelineRequest,
+        analysis: LawSearchAnalysis,
+        question_summary: str,
+    ) -> None:
+        if analysis.related_law_queries or analysis.issue_terms or analysis.proposed_keywords:
+            self.suggestion_store.create_or_update_suggestion(
+                request_id=request_id,
+                question_summary=question_summary,
+                user_query=req.user_query,
+                question_intent=analysis.question_intent,
+                related_law_queries=analysis.related_law_queries,
+                issue_terms=analysis.issue_terms,
+                search_queries=analysis.search_queries,
+                proposed_keywords=analysis.proposed_keywords,
+            )
+
     @staticmethod
     def _extract_article_numbers(question: str) -> List[str]:
         matches = re.findall(r"제\s*(\d+)\s*조(?:의\s*(\d+))?", question)
@@ -245,13 +364,19 @@ class RequestPipeline:
             return f"[LAW_CONTEXT]\n{extra}"
         return base_context
 
-    @staticmethod
-    def _law_search_queries(user_query: str) -> List[str]:
+    @classmethod
+    def _law_search_queries(
+        cls,
+        user_query: str,
+        related_law_queries: Optional[List[str]] = None,
+    ) -> List[str]:
         normalized = re.sub(r"\s+", " ", user_query).strip()
         if not normalized:
             return []
 
         queries: List[str] = []
+        related_law_queries = related_law_queries or []
+        issue_terms = cls._extract_issue_query_terms(normalized)
         law_name_match = re.search(
             r"([가-힣A-Za-z0-9 ]+?(?:법 시행규칙|법 시행령|법|시행규칙|시행령))",
             normalized,
@@ -264,6 +389,14 @@ class RequestPipeline:
         simplified = re.sub(r"\s+", " ", simplified).strip(" ,")
         if simplified:
             queries.append(simplified)
+
+        for related_law in related_law_queries[:4]:
+            queries.append(related_law)
+            for issue_term in issue_terms[:4]:
+                queries.append(f"{related_law} {issue_term}")
+
+        for issue_term in issue_terms[:4]:
+            queries.append(issue_term)
 
         queries.append(normalized)
 
@@ -598,6 +731,8 @@ class RequestPipeline:
         tokens_out = 0
         score = 0.0
         intent = self._question_intent(req.user_query)
+        search_analysis = self._analyze_law_search(req.user_query)
+        question_summary = self._question_summary(req.user_query)
         call_metrics: Dict[str, int] = {
             "law_search_count": 0,
             "version_fetch_count": 0,
@@ -623,12 +758,16 @@ class RequestPipeline:
             ):
                 mode = "multi_agent"
 
-            search_queries = self._law_search_queries(req.user_query)
-            related_law_queries = self._related_law_queries(req.user_query)
+            related_law_queries = search_analysis.related_law_queries
+            search_queries = search_analysis.search_queries
             law_data: Dict[str, Any] = {}
             used_search_query: Optional[str] = None
             search_datasets: List[Dict[str, Any]] = []
+            searched_queries = set()
             for search_query in search_queries:
+                if search_query in searched_queries:
+                    continue
+                searched_queries.add(search_query)
                 self._increment_metric(call_metrics, "law_search_count")
                 self._increment_metric(call_metrics, "nlic_calls")
                 result = self.law_api.search_law(search_query)
@@ -638,6 +777,9 @@ class RequestPipeline:
                     used_search_query = search_query
                     break
             for related_query in related_law_queries:
+                if related_query in searched_queries:
+                    continue
+                searched_queries.add(related_query)
                 self._increment_metric(call_metrics, "law_search_count")
                 self._increment_metric(call_metrics, "nlic_calls")
                 result = self.law_api.search_law(related_query)
@@ -713,6 +855,7 @@ class RequestPipeline:
                     cost=cost,
                     latency=latency,
                     score=score,
+                    question_summary=question_summary,
                     question_intent=intent,
                     tool_calls=call_metrics["nlic_calls"],
                     nlic_calls=call_metrics["nlic_calls"],
@@ -739,6 +882,13 @@ class RequestPipeline:
             )
 
         except PipelineStageError as exc:
+            if exc.stage == "LawAPI":
+                self._record_law_hint_suggestion(
+                    request_id=request_id,
+                    req=req,
+                    analysis=search_analysis,
+                    question_summary=question_summary,
+                )
             latency = round((time.perf_counter() - started) * 1000, 3)
             cost = self._estimate_cost(tokens_in=tokens_in, tokens_out=tokens_out)
             self.logger.log_request(
@@ -751,6 +901,7 @@ class RequestPipeline:
                     cost=cost,
                     latency=latency,
                     score=score,
+                    question_summary=question_summary,
                     question_intent=intent,
                     error_stage=exc.stage,
                     tool_calls=call_metrics["nlic_calls"],
@@ -786,6 +937,7 @@ class RequestPipeline:
                     cost=cost,
                     latency=latency,
                     score=score,
+                    question_summary=question_summary,
                     question_intent=intent,
                     error_stage="Unhandled",
                     tool_calls=call_metrics["nlic_calls"],

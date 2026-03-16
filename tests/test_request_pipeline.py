@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from src.cost_logger import CostLogger
+from src.law_hint_suggestions import LawHintSuggestionStore
 from src.request_pipeline import PipelineRequest, RequestPipeline
 
 
@@ -125,6 +126,24 @@ class FakeLawApiNeedsNormalizedQuery(FakeLawApiEmpty):
         return {"LawSearch": {"law": [], "totalCnt": "0"}}
 
 
+class FakeLawApiLibrary(FakeLawApiOk):
+    def search_law(self, query):
+        self.search_queries.append(query)
+        if query == "도서관법":
+            return {
+                "LawSearch": {
+                    "law": [
+                        {
+                            "법령ID": "009567",
+                            "법령명한글": "도서관법",
+                            "법령일련번호": "290001",
+                        }
+                    ]
+                }
+            }
+        return super().search_law(query)
+
+
 class RequestPipelineTests(unittest.TestCase):
     def test_process_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,6 +171,7 @@ class RequestPipelineTests(unittest.TestCase):
             logged = logger.get_by_request_id(result.request_id)
             self.assertIsNotNone(logged)
             self.assertEqual(logged.request_id, result.request_id)
+            self.assertIn("개인정보 처리", logged.question_summary)
             self.assertEqual(logged.question_intent, "illegality")
             self.assertGreaterEqual(logged.law_search_count, 1)
             self.assertGreaterEqual(logged.nlic_calls, logged.law_search_count)
@@ -322,10 +342,55 @@ class RequestPipelineTests(unittest.TestCase):
 
         self.assertIn("위치정보의 보호 및 이용 등에 관한 법률", queries)
 
+    def test_related_law_queries_include_library_law_hint(self):
+        queries = RequestPipeline._related_law_queries(
+            "작은도서관 프로그램 출석부를 정산 증빙으로 제출할 때 이름을 가려도 되는지"
+        )
+
+        self.assertIn("도서관법", queries)
+
+    def test_law_search_queries_rewrite_with_related_law_and_issue_terms(self):
+        queries = RequestPipeline._law_search_queries(
+            "작은도서관 출석부를 정산 증빙으로 제출할 때 개인정보를 가려도 되는지",
+            related_law_queries=["도서관법", "개인정보 보호법"],
+        )
+
+        self.assertIn("도서관법", queries)
+        self.assertIn("도서관법 출석부", queries)
+        self.assertIn("개인정보 보호법 개인정보", queries)
+        self.assertIn("증빙서류", queries)
+
+    def test_process_collects_related_laws_for_library_question(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            law_api = FakeLawApiLibrary()
+            pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+            result = pipeline.process(
+                PipelineRequest(
+                    user_query="작은도서관 출석부를 정산 증빙으로 제출할 때 이름을 가려도 되는지 설명해줘.",
+                    context="기준시점: 2026-03-16",
+                )
+            )
+
+            self.assertIsNone(result.error)
+            self.assertIn("도서관법", law_api.search_queries)
+            self.assertTrue(
+                any("도서관법" == (item.get("law_name")) for item in result.citations["law_context"]["related_laws"])
+            )
+
     def test_process_error_path_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
-            pipeline = RequestPipeline(law_api=FakeLawApiEmpty(), logger=logger)
+            suggestion_store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            )
+            pipeline = RequestPipeline(
+                law_api=FakeLawApiEmpty(),
+                logger=logger,
+                suggestion_store=suggestion_store,
+            )
 
             result = pipeline.process(PipelineRequest(user_query="테스트"))
 
@@ -337,6 +402,63 @@ class RequestPipelineTests(unittest.TestCase):
             self.assertIsNotNone(logged)
             self.assertTrue(logged.mode.startswith("error:"))
             self.assertEqual(logged.error_stage, "LawAPI")
+            suggestions = suggestion_store.list_suggestions()
+            self.assertEqual(len(suggestions), 1)
+            self.assertEqual(suggestions[0].question_summary, "테스트")
+
+    def test_process_reuses_existing_law_hint_suggestion_for_duplicate_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            suggestion_store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            )
+            pipeline = RequestPipeline(
+                law_api=FakeLawApiEmpty(),
+                logger=logger,
+                suggestion_store=suggestion_store,
+            )
+
+            first = pipeline.process(PipelineRequest(user_query="작은도서관 출석부 개인정보 마스킹"))
+            second = pipeline.process(PipelineRequest(user_query="작은도서관 출석부 개인정보 마스킹"))
+
+            self.assertIsNotNone(first.error)
+            self.assertIsNotNone(second.error)
+            suggestions = suggestion_store.list_suggestions()
+            self.assertEqual(len(suggestions), 1)
+            self.assertEqual(suggestions[0].occurrence_count, 2)
+
+    def test_approved_law_hint_override_is_used_for_related_queries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            suggestion_store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            )
+            suggestion = suggestion_store.create_or_update_suggestion(
+                request_id="req-1",
+                question_summary="강사비 지급",
+                user_query="강사비 지급 관련 법령",
+                question_intent="explain",
+                related_law_queries=["소득세법"],
+                issue_terms=["원천징수"],
+                search_queries=["소득세법 원천징수"],
+                proposed_keywords=["강사비", "원천징수"],
+            )
+            suggestion_store.approve_suggestion(
+                suggestion.id,
+                law_name="소득세법",
+                keywords=["강사비", "원천징수"],
+            )
+            pipeline = RequestPipeline(
+                law_api=FakeLawApiOk(),
+                logger=logger,
+                suggestion_store=suggestion_store,
+            )
+
+            queries = pipeline._resolved_related_law_queries("외부 강사비 원천징수 기준이 궁금합니다")
+
+            self.assertIn("소득세법", queries)
 
 
 if __name__ == "__main__":

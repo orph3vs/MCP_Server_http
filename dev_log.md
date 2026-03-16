@@ -195,6 +195,24 @@
   - `view=readable`
   - `view=table`
 
+### 21. LawAPI 실패 suggestion 승인 흐름 추가
+
+- `src/law_hint_suggestions.py`
+- `src/request_pipeline.py`
+- 질의 재작성에서 뽑은 결과를 재사용해서:
+  - `related_law_queries`
+  - `issue_terms`
+  - `search_queries`
+  - `proposed_keywords`
+  를 한 번만 계산
+- `LawAPI` 실패 시 자동으로 suggestion을 저장
+- suggestion은 바로 규칙에 반영하지 않고 승인 대기 상태로 유지
+- 승인된 suggestion만 동적 힌트 override로 반영
+- HTTP 엔드포인트 추가
+  - `GET /suggestions/law-hints`
+  - `POST /suggestions/law-hints/approve`
+  - `POST /suggestions/law-hints/reject`
+
 ### 21. 생성물 정리
 
 - `.gitignore` 반영
@@ -247,6 +265,8 @@
 - 2026-03-16: cost logger 스키마 확장
 - 2026-03-16: `/logs/recent?view=readable` 추가
 - 2026-03-16: `/logs/recent?view=table` 추가
+- 2026-03-16: cost log에 `question_summary`를 추가해 요청 ID 없이도 최근 로그에서 질문 맥락을 바로 읽을 수 있게 함
+- 2026-03-16: 법령명이 직접 없는 질문을 위해 `관련 법령명 + 이슈` 형태의 query rewriting을 추가하고, `도서관법` 힌트를 보강함
 - 2026-03-16: 생성물(`pyc`, cache, db/log tracking`) 정리
 
 ## 최근 테스트 결과

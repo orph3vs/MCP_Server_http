@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from src.cost_logger import CostLogEntry
 from src.http_server import (
@@ -7,10 +9,12 @@ from src.http_server import (
     parse_recent_limit,
     parse_recent_view,
     parse_tool_request,
+    render_log_html,
     render_log_table,
     to_readable_log_item,
     to_readable_summary,
 )
+from src.law_hint_suggestions import LawHintSuggestionStore
 
 
 class HttpServerParsingTests(unittest.TestCase):
@@ -71,11 +75,14 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertEqual(parse_recent_view("/logs/recent"), "raw")
         self.assertEqual(parse_recent_view("/logs/recent?view=readable"), "readable")
         self.assertEqual(parse_recent_view("/logs/recent?view=table"), "table")
+        self.assertEqual(parse_recent_view("/logs/recent?view=html"), "html")
 
     def test_to_readable_log_item(self):
         item = to_readable_log_item(
             CostLogEntry(
                 request_id="req-1",
+                entry_type="tool",
+                tool_name="search_law",
                 risk_level="HIGH",
                 mode="multi_agent",
                 tokens_in=10,
@@ -83,6 +90,7 @@ class HttpServerParsingTests(unittest.TestCase):
                 cost=0.001,
                 latency=30.5,
                 score=88.0,
+                question_summary="개인정보 보호법 위법 여부 질문",
                 question_intent="illegality",
                 law_search_count=2,
                 related_law_count=1,
@@ -90,6 +98,9 @@ class HttpServerParsingTests(unittest.TestCase):
                 has_precedent=True,
             )
         )
+        self.assertEqual(item["로그종류"], "tool")
+        self.assertEqual(item["도구명"], "search_law")
+        self.assertEqual(item["질문요약"], "개인정보 보호법 위법 여부 질문")
         self.assertEqual(item["질문유형"], "위법 여부형")
         self.assertTrue(item["판례포함여부"])
         self.assertTrue(any("판례 검색" in note for note in item["해석메모"]))
@@ -98,6 +109,8 @@ class HttpServerParsingTests(unittest.TestCase):
         readable = to_readable_summary(
             {
                 "count": 2,
+                "request_entry_count": 1,
+                "tool_entry_count": 1,
                 "total_cost": 0.003,
                 "avg_cost": 0.0015,
                 "avg_latency": 40.0,
@@ -109,6 +122,8 @@ class HttpServerParsingTests(unittest.TestCase):
             }
         )
         self.assertEqual(readable["최근요청수"], 2)
+        self.assertEqual(readable["질문로그수"], 1)
+        self.assertEqual(readable["도구로그수"], 1)
         self.assertEqual(readable["판례검색포함요청수"], 1)
 
     def test_render_log_table(self):
@@ -116,6 +131,8 @@ class HttpServerParsingTests(unittest.TestCase):
             [
                 CostLogEntry(
                     request_id="req-1",
+                    entry_type="tool",
+                    tool_name="search_law",
                     risk_level="HIGH",
                     mode="multi_agent",
                     tokens_in=10,
@@ -123,6 +140,7 @@ class HttpServerParsingTests(unittest.TestCase):
                     cost=0.001,
                     latency=30.5,
                     score=88.0,
+                    question_summary="개인정보 보호법 위법 여부 질문",
                     question_intent="illegality",
                     nlic_calls=4,
                     law_search_count=2,
@@ -145,8 +163,57 @@ class HttpServerParsingTests(unittest.TestCase):
         )
         self.assertIn("[최근 요청 요약]", table)
         self.assertIn("요청ID", table)
+        self.assertIn("종류", table)
+        self.assertIn("도구", table)
+        self.assertIn("질문요약", table)
+        self.assertIn("개인정보 보호법 위법 여부 질문", table)
         self.assertIn("req-1", table)
         self.assertIn("메모:", table)
+
+    def test_render_log_html(self):
+        html_doc = render_log_html(
+            [
+                CostLogEntry(
+                    request_id="req-1",
+                    entry_type="tool",
+                    tool_name="search_law",
+                    risk_level="HIGH",
+                    mode="multi_agent",
+                    tokens_in=10,
+                    tokens_out=20,
+                    cost=0.001,
+                    latency=30.5,
+                    score=88.0,
+                    question_summary="개인정보 보호법 위법 여부 질문",
+                    question_intent="illegality",
+                    nlic_calls=4,
+                    law_search_count=2,
+                    article_fetch_count=1,
+                    precedent_search_count=1,
+                    related_law_count=1,
+                    has_precedent=True,
+                    has_related_laws=True,
+                )
+            ],
+            {
+                "count": 1,
+                "request_entry_count": 0,
+                "tool_entry_count": 1,
+                "total_cost": 0.001,
+                "avg_latency": 30.5,
+                "avg_nlic_calls": 4.0,
+                "multi_agent_count": 1,
+                "high_risk_count": 1,
+                "error_count": 0,
+            },
+        )
+        self.assertIn("<!doctype html>", html_doc.lower())
+        self.assertIn("MyMcpServer Logs", html_doc)
+        self.assertIn("개인정보 보호법 위법 여부 질문", html_doc)
+        self.assertIn("search_law", html_doc)
+        self.assertIn("로그 종류 필터", html_doc)
+        self.assertIn("새로고침", html_doc)
+        self.assertIn("error-row", html_doc)
 
     def test_parse_ask_request_missing_query(self):
         with self.assertRaises(ValueError):
@@ -155,6 +222,28 @@ class HttpServerParsingTests(unittest.TestCase):
     def test_parse_ask_request_invalid_json(self):
         with self.assertRaises(ValueError):
             parse_ask_request(b"{bad-json")
+
+    def test_law_hint_suggestion_store_approve_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            )
+            suggestion = store.create_or_update_suggestion(
+                request_id="req-1",
+                question_summary="도서관 출석부",
+                user_query="도서관 출석부 제출",
+                question_intent="explain",
+                related_law_queries=["도서관법"],
+                issue_terms=["출석부"],
+                search_queries=["도서관법 출석부"],
+                proposed_keywords=["도서관", "출석부"],
+            )
+
+            approved = store.approve_suggestion(suggestion.id)
+
+            self.assertEqual(approved.status, "approved")
+            self.assertEqual(store.approved_overrides()["도서관법"], ["도서관", "출석부"])
 
 
 if __name__ == "__main__":

@@ -19,6 +19,9 @@ class CostLogEntry:
     cost: float
     latency: float
     score: float
+    entry_type: str = "request"
+    tool_name: str = ""
+    question_summary: str = ""
     question_intent: str = "explain"
     error_stage: Optional[str] = None
     tool_calls: int = 0
@@ -65,6 +68,9 @@ class CostLogger:
                 CREATE TABLE IF NOT EXISTS request_cost_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id TEXT NOT NULL,
+                    entry_type TEXT NOT NULL DEFAULT 'request',
+                    tool_name TEXT NOT NULL DEFAULT '',
+                    question_summary TEXT NOT NULL DEFAULT '',
                     risk_level TEXT NOT NULL,
                     mode TEXT NOT NULL,
                     tokens_in INTEGER NOT NULL,
@@ -95,6 +101,9 @@ class CostLogger:
     @staticmethod
     def _column_defs() -> dict[str, str]:
         return {
+            "entry_type": "TEXT NOT NULL DEFAULT 'request'",
+            "tool_name": "TEXT NOT NULL DEFAULT ''",
+            "question_summary": "TEXT NOT NULL DEFAULT ''",
             "question_intent": "TEXT NOT NULL DEFAULT 'explain'",
             "error_stage": "TEXT",
             "tool_calls": "INTEGER NOT NULL DEFAULT 0",
@@ -126,14 +135,17 @@ class CostLogger:
             conn.execute(
                 """
                 INSERT INTO request_cost_logs (
-                    request_id, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
+                    request_id, entry_type, tool_name, question_summary, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
                     question_intent, error_stage, tool_calls, nlic_calls, law_search_count,
                     version_fetch_count, article_fetch_count, related_article_count, related_law_count,
                     precedent_search_count, precedent_fetch_count, has_precedent, has_related_laws
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.request_id,
+                    entry.entry_type,
+                    entry.tool_name,
+                    entry.question_summary,
                     entry.risk_level,
                     entry.mode,
                     entry.tokens_in,
@@ -166,7 +178,7 @@ class CostLogger:
             rows = conn.execute(
                 """
                 SELECT
-                    request_id, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
+                    request_id, entry_type, tool_name, question_summary, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
                     question_intent, error_stage, tool_calls, nlic_calls, law_search_count,
                     version_fetch_count, article_fetch_count, related_article_count, related_law_count,
                     precedent_search_count, precedent_fetch_count, has_precedent, has_related_laws
@@ -180,26 +192,29 @@ class CostLogger:
         return [
             CostLogEntry(
                 request_id=row[0],
-                risk_level=row[1],
-                mode=row[2],
-                tokens_in=row[3],
-                tokens_out=row[4],
-                cost=row[5],
-                latency=row[6],
-                score=row[7],
-                question_intent=row[8],
-                error_stage=row[9],
-                tool_calls=row[10],
-                nlic_calls=row[11],
-                law_search_count=row[12],
-                version_fetch_count=row[13],
-                article_fetch_count=row[14],
-                related_article_count=row[15],
-                related_law_count=row[16],
-                precedent_search_count=row[17],
-                precedent_fetch_count=row[18],
-                has_precedent=bool(row[19]),
-                has_related_laws=bool(row[20]),
+                entry_type=row[1],
+                tool_name=row[2],
+                question_summary=row[3],
+                risk_level=row[4],
+                mode=row[5],
+                tokens_in=row[6],
+                tokens_out=row[7],
+                cost=row[8],
+                latency=row[9],
+                score=row[10],
+                question_intent=row[11],
+                error_stage=row[12],
+                tool_calls=row[13],
+                nlic_calls=row[14],
+                law_search_count=row[15],
+                version_fetch_count=row[16],
+                article_fetch_count=row[17],
+                related_article_count=row[18],
+                related_law_count=row[19],
+                precedent_search_count=row[20],
+                precedent_fetch_count=row[21],
+                has_precedent=bool(row[22]),
+                has_related_laws=bool(row[23]),
             )
             for row in rows
         ]
@@ -209,7 +224,7 @@ class CostLogger:
             row = conn.execute(
                 """
                 SELECT
-                    request_id, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
+                    request_id, entry_type, tool_name, question_summary, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
                     question_intent, error_stage, tool_calls, nlic_calls, law_search_count,
                     version_fetch_count, article_fetch_count, related_article_count, related_law_count,
                     precedent_search_count, precedent_fetch_count, has_precedent, has_related_laws
@@ -226,26 +241,29 @@ class CostLogger:
 
         return CostLogEntry(
             request_id=row[0],
-            risk_level=row[1],
-            mode=row[2],
-            tokens_in=row[3],
-            tokens_out=row[4],
-            cost=row[5],
-            latency=row[6],
-            score=row[7],
-            question_intent=row[8],
-            error_stage=row[9],
-            tool_calls=row[10],
-            nlic_calls=row[11],
-            law_search_count=row[12],
-            version_fetch_count=row[13],
-            article_fetch_count=row[14],
-            related_article_count=row[15],
-            related_law_count=row[16],
-            precedent_search_count=row[17],
-            precedent_fetch_count=row[18],
-            has_precedent=bool(row[19]),
-            has_related_laws=bool(row[20]),
+            entry_type=row[1],
+            tool_name=row[2],
+            question_summary=row[3],
+            risk_level=row[4],
+            mode=row[5],
+            tokens_in=row[6],
+            tokens_out=row[7],
+            cost=row[8],
+            latency=row[9],
+            score=row[10],
+            question_intent=row[11],
+            error_stage=row[12],
+            tool_calls=row[13],
+            nlic_calls=row[14],
+            law_search_count=row[15],
+            version_fetch_count=row[16],
+            article_fetch_count=row[17],
+            related_article_count=row[18],
+            related_law_count=row[19],
+            precedent_search_count=row[20],
+            precedent_fetch_count=row[21],
+            has_precedent=bool(row[22]),
+            has_related_laws=bool(row[23]),
         )
 
     def summarize_recent(self, limit: int = 50) -> dict[str, float | int]:
@@ -257,6 +275,8 @@ class CostLogger:
                 "avg_cost": 0.0,
                 "avg_latency": 0.0,
                 "avg_nlic_calls": 0.0,
+                "tool_entry_count": 0,
+                "request_entry_count": 0,
                 "multi_agent_count": 0,
                 "high_risk_count": 0,
                 "error_count": 0,
@@ -271,6 +291,8 @@ class CostLogger:
             "avg_cost": round(total_cost / count, 6),
             "avg_latency": round(sum(row.latency for row in rows) / count, 3),
             "avg_nlic_calls": round(sum(row.nlic_calls for row in rows) / count, 3),
+            "tool_entry_count": sum(1 for row in rows if row.entry_type == "tool"),
+            "request_entry_count": sum(1 for row in rows if row.entry_type == "request"),
             "multi_agent_count": sum(1 for row in rows if row.mode == "multi_agent"),
             "high_risk_count": sum(1 for row in rows if row.risk_level == "HIGH"),
             "error_count": sum(1 for row in rows if row.error_stage),

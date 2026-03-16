@@ -14,6 +14,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import html
 import json
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.context_builder import build_context
 from src.cost_logger import CostLogEntry
+from src.law_hint_suggestions import LawHintSuggestion
 from src.request_pipeline import PipelineRequest, RequestPipeline
 
 
@@ -38,6 +40,15 @@ def _text_response(handler: BaseHTTPRequestHandler, status: int, body: str) -> N
     payload = body.encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    handler.wfile.write(payload)
+
+
+def _html_response(handler: BaseHTTPRequestHandler, status: int, body: str) -> None:
+    payload = body.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     handler.wfile.write(payload)
@@ -118,14 +129,17 @@ def parse_recent_view(path: str) -> str:
     parsed = urlparse(path)
     query = parse_qs(parsed.query)
     view = query.get("view", ["raw"])[0].strip().lower()
-    if view not in {"raw", "readable", "table"}:
+    if view not in {"raw", "readable", "table", "html"}:
         raise ValueError("invalid_view")
     return view
 
 
 def log_field_descriptions() -> Dict[str, str]:
     return {
+        "entry_type": "로그 종류입니다. request는 질문 단위, tool은 개별 MCP 도구 호출입니다.",
+        "tool_name": "개별 MCP 도구 호출일 때 어떤 도구였는지 표시합니다.",
         "request_id": "요청 고유 ID입니다.",
+        "question_summary": "원문 전체 대신 남기는 짧은 질문 요약입니다.",
         "risk_level": "질문 위험도입니다. HIGH면 보수적으로 검토합니다.",
         "mode": "처리 방식입니다. single_agent 또는 multi_agent, 오류 모드가 들어갑니다.",
         "question_intent": "질문 의도 분류입니다. 설명, 위법 여부, 절차, 비교 같은 유형을 뜻합니다.",
@@ -179,7 +193,10 @@ def _build_log_notes(entry: CostLogEntry) -> list[str]:
 
 def to_readable_log_item(entry: CostLogEntry) -> Dict[str, Any]:
     return {
+        "로그종류": entry.entry_type,
+        "도구명": entry.tool_name,
         "요청ID": entry.request_id,
+        "질문요약": entry.question_summary,
         "위험도": entry.risk_level,
         "처리모드": entry.mode,
         "질문유형": _intent_label(entry.question_intent),
@@ -206,6 +223,8 @@ def to_readable_log_item(entry: CostLogEntry) -> Dict[str, Any]:
 def to_readable_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "최근요청수": summary.get("count", 0),
+        "질문로그수": summary.get("request_entry_count", 0),
+        "도구로그수": summary.get("tool_entry_count", 0),
         "총예상비용": summary.get("total_cost", 0.0),
         "평균예상비용": summary.get("avg_cost", 0.0),
         "평균응답시간_ms": summary.get("avg_latency", 0.0),
@@ -245,6 +264,9 @@ def render_log_table(rows: list[CostLogEntry], summary: Dict[str, Any]) -> str:
 
     columns = [
         ("요청ID", 10),
+        ("종류", 7),
+        ("도구", 18),
+        ("질문요약", 24),
         ("위험도", 6),
         ("모드", 12),
         ("질문유형", 10),
@@ -261,6 +283,9 @@ def render_log_table(rows: list[CostLogEntry], summary: Dict[str, Any]) -> str:
     def row_values(entry: CostLogEntry) -> list[str]:
         return [
             _truncate_cell(entry.request_id, 10),
+            _truncate_cell(entry.entry_type, 7),
+            _truncate_cell(entry.tool_name or "-", 18),
+            _truncate_cell(entry.question_summary or "-", 24),
             entry.risk_level,
             _truncate_cell(entry.mode, 12),
             _truncate_cell(_intent_label(entry.question_intent), 10),
@@ -297,6 +322,247 @@ def render_log_table(rows: list[CostLogEntry], summary: Dict[str, Any]) -> str:
     return "\n".join(header_lines + body_lines)
 
 
+def render_log_html(rows: list[CostLogEntry], summary: Dict[str, Any]) -> str:
+    def esc(value: Any) -> str:
+        return html.escape(str(value))
+
+    summary_items = [
+        ("최근 요청 수", summary.get("count", 0)),
+        ("질문 로그 수", summary.get("request_entry_count", 0)),
+        ("도구 로그 수", summary.get("tool_entry_count", 0)),
+        ("총 예상 비용", summary.get("total_cost", 0.0)),
+        ("평균 응답시간(ms)", summary.get("avg_latency", 0.0)),
+        ("평균 NLIC 호출 수", summary.get("avg_nlic_calls", 0.0)),
+        ("멀티에이전트 수", summary.get("multi_agent_count", 0)),
+        ("고위험 수", summary.get("high_risk_count", 0)),
+        ("오류 수", summary.get("error_count", 0)),
+    ]
+
+    cards = []
+    for label, value in summary_items:
+        cards.append(
+            f"<div class='card'><div class='label'>{esc(label)}</div><div class='value'>{esc(value)}</div></div>"
+        )
+
+    rows_html = []
+    for entry in rows:
+        notes = "".join(f"<li>{esc(note)}</li>" for note in _build_log_notes(entry))
+        row_class = "error-row" if entry.error_stage else ""
+        rows_html.append(
+            f"<tr class='{row_class}' data-entry-type='{esc(entry.entry_type)}'>"
+            f"<td>{esc(entry.request_id)}</td>"
+            f"<td>{esc(entry.entry_type)}</td>"
+            f"<td>{esc(entry.tool_name or '-')}</td>"
+            f"<td>{esc(entry.question_summary or '-')}</td>"
+            f"<td>{esc(entry.risk_level)}</td>"
+            f"<td>{esc(entry.mode)}</td>"
+            f"<td>{esc(_intent_label(entry.question_intent))}</td>"
+            f"<td>{entry.cost:.6f}</td>"
+            f"<td>{entry.latency:.1f}</td>"
+            f"<td>{esc(entry.nlic_calls)}</td>"
+            f"<td>{esc(entry.law_search_count)}</td>"
+            f"<td>{esc(entry.article_fetch_count)}</td>"
+            f"<td>{esc(entry.precedent_search_count)}</td>"
+            f"<td>{esc(entry.related_law_count)}</td>"
+            f"<td>{esc(entry.error_stage or '-')}</td>"
+            f"<td><ul>{notes}</ul></td>"
+            "</tr>"
+        )
+
+    table_rows = "\n".join(rows_html) if rows_html else "<tr><td colspan='16'>로그가 없습니다.</td></tr>"
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MyMcpServer Logs</title>
+  <style>
+    :root {{
+      --bg: #f5f2ea;
+      --panel: #fffdf8;
+      --ink: #1f2a2e;
+      --muted: #5c6b70;
+      --line: #d9d1c3;
+      --accent: #a64b2a;
+      --accent-soft: #f3dfd6;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, #f6d8c6 0, transparent 28%),
+        linear-gradient(180deg, #f8f5ef 0%, var(--bg) 100%);
+    }}
+    .wrap {{
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 28px 20px 36px;
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: 32px;
+    }}
+    .sub {{
+      color: var(--muted);
+      margin-bottom: 18px;
+    }}
+    .cards {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 8px 24px rgba(63, 42, 18, 0.06);
+    }}
+    .label {{
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 6px;
+    }}
+    .value {{
+      font-size: 22px;
+      font-weight: 700;
+    }}
+    .table-wrap {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: auto;
+      box-shadow: 0 10px 28px rgba(63, 42, 18, 0.08);
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1220px;
+    }}
+    th, td {{
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+      font-size: 14px;
+    }}
+    th {{
+      position: sticky;
+      top: 0;
+      background: #f2ece1;
+      color: #29343a;
+      z-index: 1;
+    }}
+    tr:nth-child(even) td {{
+      background: #fffaf1;
+    }}
+    tr.error-row td {{
+      background: #fff0eb;
+    }}
+    .badge {{
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 12px;
+    }}
+    .toolbar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }}
+    .toolbar label {{
+      font-size: 14px;
+      color: var(--muted);
+    }}
+    .toolbar select,
+    .toolbar button {{
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+    }}
+    .toolbar button {{
+      cursor: pointer;
+      background: #f3dfd6;
+      color: #6c2e18;
+      font-weight: 600;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 18px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MyMcpServer Logs</h1>
+    <div class="sub">브라우저에서 최근 요청과 MCP 도구 호출을 한눈에 확인할 수 있는 로그 뷰입니다.</div>
+    <div class="cards">
+      {''.join(cards)}
+    </div>
+    <div class="toolbar">
+      <label for="entryFilter">로그 종류 필터</label>
+      <select id="entryFilter">
+        <option value="all">전체</option>
+        <option value="request">질문 로그만</option>
+        <option value="tool">도구 로그만</option>
+      </select>
+      <button type="button" onclick="window.location.reload()">새로고침</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>요청ID</th>
+            <th>종류</th>
+            <th>도구</th>
+            <th>질문요약</th>
+            <th>위험도</th>
+            <th>모드</th>
+            <th>질문유형</th>
+            <th>비용</th>
+            <th>시간ms</th>
+            <th>NLIC</th>
+            <th>법검색</th>
+            <th>조문</th>
+            <th>판례</th>
+            <th>관련법</th>
+            <th>오류</th>
+            <th>메모</th>
+          </tr>
+        </thead>
+        <tbody>
+          {table_rows}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <script>
+    const entryFilter = document.getElementById('entryFilter');
+    const rows = Array.from(document.querySelectorAll('tbody tr[data-entry-type]'));
+    entryFilter.addEventListener('change', () => {{
+      const selected = entryFilter.value;
+      rows.forEach((row) => {{
+        const entryType = row.getAttribute('data-entry-type');
+        row.style.display = (selected === 'all' || entryType === selected) ? '' : 'none';
+      }});
+    }});
+  </script>
+</body>
+</html>"""
+
+
 class PipelineHttpHandler(BaseHTTPRequestHandler):
     _pipeline: Optional[RequestPipeline] = None
 
@@ -322,6 +588,9 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
                 if view == "table":
                     _text_response(self, 200, render_log_table(rows, summary))
                     return
+                if view == "html":
+                    _html_response(self, 200, render_log_html(rows, summary))
+                    return
                 payload: Dict[str, Any] = {
                     "count": len(rows),
                     "summary": summary,
@@ -335,6 +604,24 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
                     self,
                     200,
                     payload,
+                )
+            except ValueError as exc:
+                _json_response(self, 400, {"error": str(exc)})
+            return
+
+        if parsed.path == "/suggestions/law-hints":
+            try:
+                query = parse_qs(parsed.query)
+                status = query.get("status", [None])[0]
+                suggestions = self.get_pipeline().suggestion_store.list_suggestions(status=status)
+                _json_response(
+                    self,
+                    200,
+                    {
+                        "count": len(suggestions),
+                        "items": [asdict(item) for item in suggestions],
+                        "approved_overrides": self.get_pipeline().suggestion_store.approved_overrides(),
+                    },
                 )
             except ValueError as exc:
                 _json_response(self, 400, {"error": str(exc)})
@@ -393,6 +680,31 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
                 fields = parse_tool_request(raw_body, ("precedent_id",))
                 data = self.get_pipeline().law_api.get_precedent(precedent_id=fields["precedent_id"])
                 _json_response(self, 200, {"data": data})
+                return
+
+            if parsed.path == "/suggestions/law-hints/approve":
+                data = parse_json_body(raw_body)
+                suggestion_id = str(data.get("suggestion_id", "")).strip()
+                if not suggestion_id:
+                    raise ValueError("missing_suggestion_id")
+                keywords = data.get("keywords")
+                if keywords is not None and not isinstance(keywords, list):
+                    raise ValueError("invalid_keywords")
+                suggestion = self.get_pipeline().suggestion_store.approve_suggestion(
+                    suggestion_id,
+                    law_name=str(data.get("law_name", "")).strip() or None,
+                    keywords=[str(keyword) for keyword in keywords] if keywords else None,
+                )
+                _json_response(self, 200, {"data": asdict(suggestion)})
+                return
+
+            if parsed.path == "/suggestions/law-hints/reject":
+                data = parse_json_body(raw_body)
+                suggestion_id = str(data.get("suggestion_id", "")).strip()
+                if not suggestion_id:
+                    raise ValueError("missing_suggestion_id")
+                suggestion = self.get_pipeline().suggestion_store.reject_suggestion(suggestion_id)
+                _json_response(self, 200, {"data": asdict(suggestion)})
                 return
 
             _json_response(self, 404, {"error": "not_found"})
