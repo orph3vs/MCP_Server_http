@@ -133,6 +133,10 @@ class RequestPipeline:
         return round((tokens_in * 0.0000015) + (tokens_out * 0.000002), 6)
 
     @staticmethod
+    def _increment_metric(metrics: Dict[str, int], key: str, amount: int = 1) -> None:
+        metrics[key] = metrics.get(key, 0) + amount
+
+    @staticmethod
     def _truncate_text(text: str, max_chars: int = 140) -> str:
         compact = re.sub(r"\s+", " ", text).strip()
         if len(compact) <= max_chars:
@@ -318,9 +322,17 @@ class RequestPipeline:
                 deduped.append(normalized)
         return deduped
 
-    def _fetch_article(self, law_id: str, article_no: str) -> Dict[str, Any]:
+    def _fetch_article(
+        self,
+        law_id: str,
+        article_no: str,
+        metrics: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
         if not hasattr(self.law_api, "get_article"):
             return {}
+        if metrics is not None:
+            self._increment_metric(metrics, "article_fetch_count")
+            self._increment_metric(metrics, "nlic_calls")
         return self.law_api.get_article(law_id=law_id, article_no=article_no)
 
     def _build_law_enrichment(
@@ -329,6 +341,7 @@ class RequestPipeline:
         law_data: Dict[str, Any],
         used_search_query: Optional[str] = None,
         risk_level: str = "LOW",
+        metrics: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         primary_law = self._pick_primary_law(law_data)
         enrichment: Dict[str, Any] = {
@@ -357,13 +370,20 @@ class RequestPipeline:
 
         if hasattr(self.law_api, "get_version"):
             try:
+                if metrics is not None:
+                    self._increment_metric(metrics, "version_fetch_count")
+                    self._increment_metric(metrics, "nlic_calls")
                 enrichment["version"] = self.law_api.get_version(law_id)
             except Exception as exc:
                 enrichment["version_error"] = str(exc)
 
         if article_numbers:
             try:
-                enrichment["article"] = self._fetch_article(law_id=law_id, article_no=article_numbers[0])
+                enrichment["article"] = self._fetch_article(
+                    law_id=law_id,
+                    article_no=article_numbers[0],
+                    metrics=metrics,
+                )
             except Exception as exc:
                 enrichment["article_error"] = str(exc)
 
@@ -372,13 +392,19 @@ class RequestPipeline:
         if should_fetch_related:
             for related_article_no in article_numbers[1:4]:
                 try:
-                    related_article = self._fetch_article(law_id=law_id, article_no=related_article_no)
+                    related_article = self._fetch_article(
+                        law_id=law_id,
+                        article_no=related_article_no,
+                        metrics=metrics,
+                    )
                 except Exception as exc:
                     related_articles.append({"article_no": related_article_no, "found": False, "error": str(exc)})
                     continue
                 related_articles.append(related_article)
         if related_articles:
             enrichment["related_articles"] = related_articles
+            if metrics is not None:
+                self._increment_metric(metrics, "related_article_count", len(related_articles))
 
         should_search_precedent = (
             risk_level == "HIGH"
@@ -392,8 +418,14 @@ class RequestPipeline:
             used_precedent_query: Optional[str] = None
             for precedent_query in precedent_queries:
                 try:
+                    if metrics is not None:
+                        self._increment_metric(metrics, "precedent_search_count")
+                        self._increment_metric(metrics, "nlic_calls")
                     precedent_data = self.law_api.search_precedent(precedent_query, reference_law=reference_law)
                 except TypeError:
+                    if metrics is not None:
+                        self._increment_metric(metrics, "precedent_search_count")
+                        self._increment_metric(metrics, "nlic_calls")
                     precedent_data = self.law_api.search_precedent(precedent_query)
                 except Exception as exc:
                     enrichment["precedent_error"] = str(exc)
@@ -416,6 +448,9 @@ class RequestPipeline:
                 )
                 if precedent_id and hasattr(self.law_api, "get_precedent"):
                     try:
+                        if metrics is not None:
+                            self._increment_metric(metrics, "precedent_fetch_count")
+                            self._increment_metric(metrics, "nlic_calls")
                         enrichment["precedent_detail"] = self.law_api.get_precedent(str(precedent_id))
                     except Exception as exc:
                         enrichment["precedent_detail_error"] = str(exc)
@@ -562,6 +597,16 @@ class RequestPipeline:
         tokens_in = len((req.user_query + " " + (req.context or "")).split())
         tokens_out = 0
         score = 0.0
+        intent = self._question_intent(req.user_query)
+        call_metrics: Dict[str, int] = {
+            "law_search_count": 0,
+            "version_fetch_count": 0,
+            "article_fetch_count": 0,
+            "related_article_count": 0,
+            "precedent_search_count": 0,
+            "precedent_fetch_count": 0,
+            "nlic_calls": 0,
+        }
 
         try:
             risk = self.risk_classifier.classify(req.user_query)
@@ -572,7 +617,6 @@ class RequestPipeline:
                 raise PipelineStageError("PromptBuilder", "invalid_prompt_payload")
             prompt_policy = extract_prompt_policy(prompt_payload)
 
-            intent = self._question_intent(req.user_query)
             mode = "multi_agent" if risk_level == "HIGH" else "single_agent"
             if prompt_policy.prefer_multi_agent_for_risky_queries and (
                 risk_level == "HIGH" or intent in {"illegality", "applicability"}
@@ -585,6 +629,8 @@ class RequestPipeline:
             used_search_query: Optional[str] = None
             search_datasets: List[Dict[str, Any]] = []
             for search_query in search_queries:
+                self._increment_metric(call_metrics, "law_search_count")
+                self._increment_metric(call_metrics, "nlic_calls")
                 result = self.law_api.search_law(search_query)
                 if result and self._extract_law_items(result):
                     search_datasets.append(result)
@@ -592,6 +638,8 @@ class RequestPipeline:
                     used_search_query = search_query
                     break
             for related_query in related_law_queries:
+                self._increment_metric(call_metrics, "law_search_count")
+                self._increment_metric(call_metrics, "nlic_calls")
                 result = self.law_api.search_law(related_query)
                 if result and self._extract_law_items(result):
                     search_datasets.append(result)
@@ -607,6 +655,7 @@ class RequestPipeline:
                 law_data,
                 used_search_query=used_search_query,
                 risk_level=risk_level,
+                metrics=call_metrics,
             )
             law_enrichment["search_queries"] = search_queries
             law_enrichment["related_law_queries"] = related_law_queries
@@ -652,6 +701,8 @@ class RequestPipeline:
 
             latency = round((time.perf_counter() - started) * 1000, 3)
             cost = self._estimate_cost(tokens_in=tokens_in, tokens_out=tokens_out)
+            related_laws = law_enrichment.get("related_laws") or []
+            has_precedent = bool(law_enrichment.get("primary_precedent"))
             self.logger.log_request(
                 CostLogEntry(
                     request_id=request_id,
@@ -662,6 +713,18 @@ class RequestPipeline:
                     cost=cost,
                     latency=latency,
                     score=score,
+                    question_intent=intent,
+                    tool_calls=call_metrics["nlic_calls"],
+                    nlic_calls=call_metrics["nlic_calls"],
+                    law_search_count=call_metrics["law_search_count"],
+                    version_fetch_count=call_metrics["version_fetch_count"],
+                    article_fetch_count=call_metrics["article_fetch_count"],
+                    related_article_count=call_metrics["related_article_count"],
+                    related_law_count=len(related_laws),
+                    precedent_search_count=call_metrics["precedent_search_count"],
+                    precedent_fetch_count=call_metrics["precedent_fetch_count"],
+                    has_precedent=has_precedent,
+                    has_related_laws=bool(related_laws),
                 )
             )
 
@@ -688,6 +751,16 @@ class RequestPipeline:
                     cost=cost,
                     latency=latency,
                     score=score,
+                    question_intent=intent,
+                    error_stage=exc.stage,
+                    tool_calls=call_metrics["nlic_calls"],
+                    nlic_calls=call_metrics["nlic_calls"],
+                    law_search_count=call_metrics["law_search_count"],
+                    version_fetch_count=call_metrics["version_fetch_count"],
+                    article_fetch_count=call_metrics["article_fetch_count"],
+                    related_article_count=call_metrics["related_article_count"],
+                    precedent_search_count=call_metrics["precedent_search_count"],
+                    precedent_fetch_count=call_metrics["precedent_fetch_count"],
                 )
             )
             return PipelineResponse(
@@ -713,6 +786,16 @@ class RequestPipeline:
                     cost=cost,
                     latency=latency,
                     score=score,
+                    question_intent=intent,
+                    error_stage="Unhandled",
+                    tool_calls=call_metrics["nlic_calls"],
+                    nlic_calls=call_metrics["nlic_calls"],
+                    law_search_count=call_metrics["law_search_count"],
+                    version_fetch_count=call_metrics["version_fetch_count"],
+                    article_fetch_count=call_metrics["article_fetch_count"],
+                    related_article_count=call_metrics["related_article_count"],
+                    precedent_search_count=call_metrics["precedent_search_count"],
+                    precedent_fetch_count=call_metrics["precedent_fetch_count"],
                 )
             )
             return PipelineResponse(

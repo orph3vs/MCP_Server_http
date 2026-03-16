@@ -282,3 +282,5 @@
 - 2026-03-13: Full test suite passed after related-law expansion (`Ran 60 tests`, `OK`).
 - 2026-03-16: Expanded related-law keyword hints across privacy/security, fintech, e-commerce, healthcare, labor, education, youth, senior welfare, housing, and public-record domains.
 - 2026-03-16: Full test suite passed after keyword-hint expansion (`Ran 61 tests`, `OK`).
+- 2026-03-16: Cost logger schema expanded to record intent, error stage, NLIC call counts, law/article/precedent fetch counts, and related-law usage for token-cost optimization analysis.
+- 2026-03-16: `/logs/recent` now returns both raw items and a summary block so expensive request patterns can be spotted without opening SQLite directly.

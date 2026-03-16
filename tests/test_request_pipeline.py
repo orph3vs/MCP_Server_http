@@ -152,6 +152,9 @@ class RequestPipelineTests(unittest.TestCase):
             logged = logger.get_by_request_id(result.request_id)
             self.assertIsNotNone(logged)
             self.assertEqual(logged.request_id, result.request_id)
+            self.assertEqual(logged.question_intent, "illegality")
+            self.assertGreaterEqual(logged.law_search_count, 1)
+            self.assertGreaterEqual(logged.nlic_calls, logged.law_search_count)
 
     def test_process_enriches_context_with_article_and_version(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -333,6 +336,7 @@ class RequestPipelineTests(unittest.TestCase):
             logged = logger.get_by_request_id(result.request_id)
             self.assertIsNotNone(logged)
             self.assertTrue(logged.mode.startswith("error:"))
+            self.assertEqual(logged.error_stage, "LawAPI")
 
 
 if __name__ == "__main__":

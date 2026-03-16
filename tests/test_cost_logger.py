@@ -20,6 +20,10 @@ class CostLoggerTests(unittest.TestCase):
                 cost=0.0123,
                 latency=210.5,
                 score=87.5,
+                question_intent="illegality",
+                nlic_calls=4,
+                law_search_count=2,
+                has_precedent=True,
             )
             logger.log_request(entry)
 
@@ -27,6 +31,9 @@ class CostLoggerTests(unittest.TestCase):
             self.assertIsNotNone(loaded)
             self.assertEqual(loaded.request_id, "req-1")
             self.assertEqual(loaded.risk_level, "HIGH")
+            self.assertEqual(loaded.question_intent, "illegality")
+            self.assertEqual(loaded.nlic_calls, 4)
+            self.assertTrue(loaded.has_precedent)
 
     def test_pipeline_run_with_logging(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,6 +61,47 @@ class CostLoggerTests(unittest.TestCase):
             self.assertEqual(loaded.mode, "parallel_review")
             self.assertEqual(loaded.tokens_in, 50)
             self.assertGreaterEqual(loaded.latency, 0)
+
+    def test_summarize_recent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cost_logs.db"
+            logger = CostLogger(db_path=str(db_path))
+            logger.log_request(
+                CostLogEntry(
+                    request_id="req-a",
+                    risk_level="LOW",
+                    mode="single_agent",
+                    tokens_in=10,
+                    tokens_out=20,
+                    cost=0.001,
+                    latency=30.0,
+                    score=80.0,
+                    nlic_calls=2,
+                )
+            )
+            logger.log_request(
+                CostLogEntry(
+                    request_id="req-b",
+                    risk_level="HIGH",
+                    mode="multi_agent",
+                    tokens_in=20,
+                    tokens_out=30,
+                    cost=0.002,
+                    latency=60.0,
+                    score=90.0,
+                    nlic_calls=5,
+                    precedent_search_count=1,
+                    error_stage="LawAPI",
+                )
+            )
+
+            summary = logger.summarize_recent(limit=10)
+
+            self.assertEqual(summary["count"], 2)
+            self.assertEqual(summary["multi_agent_count"], 1)
+            self.assertEqual(summary["high_risk_count"], 1)
+            self.assertEqual(summary["error_count"], 1)
+            self.assertEqual(summary["precedent_request_count"], 1)
 
 
 if __name__ == "__main__":

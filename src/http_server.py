@@ -129,6 +129,7 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
                     200,
                     {
                         "count": len(rows),
+                        "summary": self.get_pipeline().logger.summarize_recent(limit=limit),
                         "items": [asdict(r) for r in rows],
                     },
                 )
