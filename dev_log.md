@@ -284,3 +284,5 @@
 - 2026-03-16: Full test suite passed after keyword-hint expansion (`Ran 61 tests`, `OK`).
 - 2026-03-16: Cost logger schema expanded to record intent, error stage, NLIC call counts, law/article/precedent fetch counts, and related-law usage for token-cost optimization analysis.
 - 2026-03-16: `/logs/recent` now returns both raw items and a summary block so expensive request patterns can be spotted without opening SQLite directly.
+- 2026-03-16: Added `/logs/recent?view=readable` output with Korean field descriptions, readable summary labels, and per-request interpretation notes for easier log inspection.
+- 2026-03-16: Added `/logs/recent?view=table` plain-text table view for quick terminal inspection without reading raw JSON.
