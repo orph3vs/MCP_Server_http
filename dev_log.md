@@ -280,3 +280,5 @@
 - 2026-03-13: Full test suite passed after answer-polish updates (`Ran 59 tests`, `OK`).
 - 2026-03-13: Request pipeline now searches related laws together for domain-heavy questions (e.g. 공동주택관리법, 위치정보법, 정보통신망법, 신용정보법) instead of relying on one primary law only.
 - 2026-03-13: Full test suite passed after related-law expansion (`Ran 60 tests`, `OK`).
+- 2026-03-16: Expanded related-law keyword hints across privacy/security, fintech, e-commerce, healthcare, labor, education, youth, senior welfare, housing, and public-record domains.
+- 2026-03-16: Full test suite passed after keyword-hint expansion (`Ran 61 tests`, `OK`).

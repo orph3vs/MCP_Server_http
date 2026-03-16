@@ -314,6 +314,11 @@ class RequestPipelineTests(unittest.TestCase):
             self.assertTrue(any(item["law_name"] == "공동주택관리법" for item in related_laws))
             self.assertIn("related_law_queries", result.citations["law_context"])
 
+    def test_related_law_queries_include_location_law_hint(self):
+        queries = RequestPipeline._related_law_queries("앱에서 GPS 위치정보를 수집해 지오펜싱 마케팅을 하려면?")
+
+        self.assertIn("위치정보의 보호 및 이용 등에 관한 법률", queries)
+
     def test_process_error_path_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
