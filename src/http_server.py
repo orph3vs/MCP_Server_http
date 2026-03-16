@@ -507,7 +507,7 @@ def render_log_html(rows: list[CostLogEntry], summary: Dict[str, Any]) -> str:
 <body>
   <div class="wrap">
     <h1>MyMcpServer Logs</h1>
-    <div class="sub">브라우저에서 최근 요청과 MCP 도구 호출을 한눈에 확인할 수 있는 로그 뷰입니다.</div>
+    <div class="sub">최근 요청과 MCP 도구 호출을 한눈에 확인할 수 있는 로그 뷰입니다.</div>
     <div class="cards">
       {''.join(cards)}
     </div>

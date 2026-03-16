@@ -213,6 +213,57 @@
   - `POST /suggestions/law-hints/approve`
   - `POST /suggestions/law-hints/reject`
 
+### 22. MCP tool 공통 로그 및 오류 표기 보강
+
+- `src/cost_logger.py`
+  - 로그 엔트리에 `entry_type`, `tool_name` 추가
+  - 질문 단위 로그(`request`)와 개별 MCP 도구 로그(`tool`)를 구분
+- `src/mcp_stdio_server.py`
+  - `search_law`, `get_article`, `get_version`, `validate_article`, `search_precedent`, `get_precedent` 호출도 로그 저장
+  - `ask`, `answer_with_citations`가 `PipelineResponse.error`를 반환하면 `isError=true`로 MCP 응답
+  - `tool_result_error name=... stage=... message=...` 형식으로 MCP 서버 로그 강화
+- `src/http_server.py`
+  - `/logs/recent`의 `readable`/`table` 뷰에 `request/tool`, `tool_name` 노출
+  - summary에 `질문로그수`, `도구로그수` 추가
+
+### 23. HTML 로그 대시보드 추가
+
+- `src/http_server.py`
+  - `/logs/recent?view=html` 추가
+  - 브라우저에서 바로 볼 수 있는 로그 대시보드 제공
+- 포함 기능
+  - 상단 요약 카드
+  - request/tool 구분 컬럼
+  - 오류 행 강조
+  - `전체 / 질문 로그만 / 도구 로그만` 필터
+  - 새로고침 버튼
+
+## 현재 판단
+
+- MCP 연결 및 stdio handshake: 안정화됨
+- 법령/조문/판례 조회: 실사용 가능한 수준
+- `/ask` 답변 품질: 질문 유형, 조문 유형, 판례 relevance, 관련 법령을 반영하는 수준까지 고도화됨
+- suggestion 승인 흐름: 구현 완료
+  - 다만 현재 트리거는 `LawAPI 완전 실패` 중심이라, 실사용 중 케이스를 보며 확장 여부 판단 예정
+- cost/logger: 운영 분석에 쓸 수 있는 수준까지 확장됨
+  - 질문 로그와 도구 로그를 분리해서 볼 수 있음
+- 현재 단계: 대형 기능 추가보다 실사용 질문 기반 튜닝 단계
+
+## 다음 운영 포인트
+
+1. 실제 질문을 던지면서
+   - 관련 법령을 놓치는지
+   - 판례가 과하거나 부족한지
+   - suggestion 후보가 필요한지
+   확인
+2. `error:LawAPI` 또는 grounding이 약한 질문이 반복되면
+   - 관련 법령 힌트 보강
+   - suggestion 승인 반영
+3. `answer_with_citations` 내부 오류가 다시 보이면
+   - `/logs/recent`
+   - `data/mcp_stdio_server.log`
+   두 곳을 같이 확인해 stage를 추적
+
 ### 21. 생성물 정리
 
 - `.gitignore` 반영
