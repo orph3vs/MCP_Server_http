@@ -145,6 +145,19 @@ class FakeLawApiLibrary(FakeLawApiOk):
 
 
 class RequestPipelineTests(unittest.TestCase):
+    def test_refined_precedent_queries_split_broad_question_into_issue_queries(self):
+        queries = RequestPipeline._precedent_search_queries_refined(
+            "대한민국에서 청소년 도박과 관련된 법적 근거를 설명해줘. 형사처벌, 청소년 보호, 온라인 도박, 업주나 플랫폼 책임도 같이 알려줘.",
+            "청소년 보호법",
+            [],
+        )
+
+        self.assertIn("청소년 보호법 판례", queries)
+        self.assertIn("청소년 도박 판례", queries)
+        self.assertIn("청소년 도박 형사처벌 판례", queries)
+        self.assertIn("청소년 도박 온라인 도박 판례", queries)
+        self.assertNotIn("형사처벌 판례", queries)
+
     def test_process_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))

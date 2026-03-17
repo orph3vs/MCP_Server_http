@@ -197,6 +197,7 @@ class RequestPipeline:
         "사례도",
         "판결",
     )
+    _PRECEDENT_SUFFIX = "\ud310\ub840"
 
     def __init__(
         self,
@@ -336,6 +337,28 @@ class RequestPipeline:
             if any(hint in normalized for hint in hints):
                 found_terms.append(canonical)
         return found_terms
+
+    @classmethod
+    def _extract_precedent_issue_terms(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        precedent_hints = {
+            "청소년 도박": ("청소년 도박", "청소년도박"),
+            "온라인 도박": ("온라인 도박", "인터넷 도박", "사이버 도박"),
+            "형사처벌": ("형사처벌", "처벌", "벌칙"),
+            "플랫폼 책임": ("플랫폼 책임", "플랫폼", "중개 플랫폼"),
+            "업주 책임": ("업주 책임", "업주", "운영자 책임"),
+            "방조": ("방조",),
+            "도박 개설": ("도박장 개설", "도박 개설", "개설", "개장"),
+            "개인정보": ("개인정보", "이름", "연락처", "주소"),
+            "동의": ("동의", "고지", "안내"),
+            "보관기간": ("보관기간", "보관", "파기"),
+            "제3자 제공": ("제3자 제공", "제삼자 제공", "제공"),
+        }
+        found_terms: List[str] = []
+        for canonical, hints in precedent_hints.items():
+            if any(hint in normalized for hint in hints):
+                found_terms.append(canonical)
+        return found_terms[:5]
 
     @classmethod
     def _extract_hint_candidate_keywords(cls, user_query: str) -> List[str]:
@@ -533,6 +556,45 @@ class RequestPipeline:
                 deduped.append(normalized)
         return deduped
 
+    @classmethod
+    def _precedent_search_queries_refined(
+        cls,
+        user_query: str,
+        used_search_query: Optional[str],
+        article_numbers: List[str],
+    ) -> List[str]:
+        queries: List[str] = []
+        issue_terms = cls._extract_precedent_issue_terms(user_query)
+        normalized = cls._clean_text(user_query)
+        anchor = issue_terms[0] if issue_terms else (cls._clean_text(used_search_query) if used_search_query else normalized)
+
+        if used_search_query and article_numbers:
+            for article_no in article_numbers[:2]:
+                queries.append(f"{used_search_query} {article_no}")
+                queries.append(f"{used_search_query} {article_no} {cls._PRECEDENT_SUFFIX}")
+
+        if anchor:
+            queries.append(f"{anchor} {cls._PRECEDENT_SUFFIX}")
+            for term in issue_terms[:3]:
+                if term == anchor:
+                    continue
+                queries.append(f"{anchor} {term}")
+                queries.append(f"{anchor} {term} {cls._PRECEDENT_SUFFIX}")
+
+        if used_search_query:
+            queries.append(f"{used_search_query} {cls._PRECEDENT_SUFFIX}")
+
+        queries.append(user_query)
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            normalized_query = cls._clean_text(query)
+            if normalized_query and normalized_query not in seen:
+                seen.add(normalized_query)
+                deduped.append(normalized_query)
+        return deduped
+
     def _fetch_article(
         self,
         law_id: str,
@@ -623,7 +685,11 @@ class RequestPipeline:
             or self._wants_precedents(user_query)
         )
         if should_search_precedent and hasattr(self.law_api, "search_precedent"):
-            precedent_queries = self._precedent_search_queries(user_query, used_search_query, article_numbers)
+            precedent_queries = self._precedent_search_queries_refined(
+                user_query,
+                used_search_query,
+                article_numbers,
+            )
             reference_law = primary_law.get("law_name")
             precedent_data: Dict[str, Any] = {}
             used_precedent_query: Optional[str] = None

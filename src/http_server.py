@@ -176,8 +176,6 @@ def _build_log_notes(entry: CostLogEntry) -> list[str]:
     notes: list[str] = []
     if entry.mode == "multi_agent":
         notes.append("멀티에이전트 검토가 적용된 요청입니다.")
-    if entry.entry_type == "tool":
-        notes.append("개별 MCP 도구 호출 로그입니다.")
     if entry.precedent_search_count > 0:
         notes.append("판례 검색이 포함되어 비용과 지연시간이 늘 수 있습니다.")
     if entry.related_law_count > 0:
@@ -186,7 +184,7 @@ def _build_log_notes(entry: CostLogEntry) -> list[str]:
         notes.append("추가 조문 조회가 포함되었습니다.")
     if entry.error_stage:
         notes.append(f"{entry.error_stage} 단계에서 오류가 발생한 요청입니다.")
-    if not notes:
+    if not notes and entry.entry_type != "tool":
         notes.append("비교적 단순한 요청으로 보입니다.")
     return notes
 
@@ -310,10 +308,12 @@ def render_log_table(rows: list[CostLogEntry], summary: Dict[str, Any]) -> str:
         body_lines.append(
             " | ".join(value.ljust(width) for value, (_, width) in zip(values, columns))
         )
-        notes = ", ".join(_build_log_notes(entry))
-        body_lines.append(
-            f"    메모: {notes} | 판례={_bool_label(entry.has_precedent)} | 관련법={_bool_label(entry.has_related_laws)}"
-        )
+        notes_list = _build_log_notes(entry)
+        if notes_list:
+            notes = ", ".join(notes_list)
+            body_lines.append(
+                f"    메모: {notes} | 판례={_bool_label(entry.has_precedent)} | 관련법={_bool_label(entry.has_related_laws)}"
+            )
 
     if not rows:
         body_lines.append("로그가 없습니다.")
@@ -354,7 +354,8 @@ def render_log_html(
 
     row_chunks = []
     for entry in rows:
-        notes = "".join(f"<li>{esc(note)}</li>" for note in _build_log_notes(entry))
+        notes_list = _build_log_notes(entry)
+        notes = "".join(f"<li>{esc(note)}</li>" for note in notes_list)
         row_class = "error-row" if entry.error_stage else ""
         type_badge = "mode-tool" if entry.entry_type == "tool" else "mode-request"
         risk_badge = "risk-high" if entry.risk_level == "HIGH" else "risk-low"
@@ -377,15 +378,20 @@ def render_log_html(
               <td>{esc(entry.related_law_count)}</td>
               <td>{esc(entry.error_stage or "-")}</td>
             </tr>
-            <tr class="notes-row {row_class}" data-entry-type="{esc(entry.entry_type)}">
-              <td colspan="15">
-                <div class="notes-head">메모</div>
-                <ul>{notes}</ul>
-                <div class="flags">판례={esc(_bool_label(entry.has_precedent))} | 관련법={esc(_bool_label(entry.has_related_laws))}</div>
-              </td>
-            </tr>
             """
         )
+        if notes_list:
+            row_chunks.append(
+                f"""
+                <tr class="notes-row {row_class}" data-entry-type="{esc(entry.entry_type)}">
+                  <td colspan="15">
+                    <div class="notes-head">메모</div>
+                    <ul>{notes}</ul>
+                    <div class="flags">판례={esc(_bool_label(entry.has_precedent))} | 관련법={esc(_bool_label(entry.has_related_laws))}</div>
+                  </td>
+                </tr>
+                """
+            )
 
     if not row_chunks:
         row_chunks.append("<tr><td colspan='15' class='empty'>로그가 없습니다.</td></tr>")

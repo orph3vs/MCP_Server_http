@@ -114,6 +114,25 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertTrue(item["판례포함여부"])
         self.assertTrue(any("판례 검색" in note for note in item["해석메모"]))
 
+    def test_to_readable_log_item_tool_without_special_notes(self):
+        item = to_readable_log_item(
+            CostLogEntry(
+                request_id="req-2",
+                entry_type="tool",
+                tool_name="get_article",
+                risk_level="LOW",
+                mode="tool",
+                tokens_in=0,
+                tokens_out=0,
+                cost=0.0,
+                latency=12.0,
+                score=0.0,
+                question_summary="제1조 원문 조회",
+                question_intent="tool",
+            )
+        )
+        self.assertEqual(item["해석메모"], [])
+
     def test_to_readable_summary(self):
         readable = to_readable_summary(
             {
@@ -181,6 +200,38 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertIn("req-1", table)
         self.assertIn("메모:", table)
 
+    def test_render_log_table_skips_empty_note_line_for_plain_tool(self):
+        table = render_log_table(
+            [
+                CostLogEntry(
+                    request_id="req-plain",
+                    entry_type="tool",
+                    tool_name="get_article",
+                    risk_level="LOW",
+                    mode="tool",
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost=0.0,
+                    latency=10.0,
+                    score=0.0,
+                    question_summary="제1조 원문 조회",
+                    question_intent="tool",
+                )
+            ],
+            {
+                "count": 1,
+                "request_entry_count": 0,
+                "tool_entry_count": 1,
+                "total_cost": 0.0,
+                "avg_latency": 10.0,
+                "avg_nlic_calls": 0.0,
+                "multi_agent_count": 0,
+                "high_risk_count": 0,
+                "error_count": 0,
+            },
+        )
+        self.assertNotIn("메모:", table)
+
     def test_render_log_html(self):
         html_doc = render_log_html(
             [
@@ -228,6 +279,38 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertIn("error-row", html_doc)
         self.assertIn("다음 100개", html_doc)
         self.assertIn("disabled", html_doc)
+
+    def test_render_log_html_skips_empty_notes_row_for_plain_tool(self):
+        html_doc = render_log_html(
+            [
+                CostLogEntry(
+                    request_id="req-plain",
+                    entry_type="tool",
+                    tool_name="get_article",
+                    risk_level="LOW",
+                    mode="tool",
+                    tokens_in=0,
+                    tokens_out=0,
+                    cost=0.0,
+                    latency=10.0,
+                    score=0.0,
+                    question_summary="제1조 원문 조회",
+                    question_intent="tool",
+                )
+            ],
+            {
+                "count": 1,
+                "request_entry_count": 0,
+                "tool_entry_count": 1,
+                "total_cost": 0.0,
+                "avg_latency": 10.0,
+                "avg_nlic_calls": 0.0,
+                "multi_agent_count": 0,
+                "high_risk_count": 0,
+                "error_count": 0,
+            },
+        )
+        self.assertNotIn("<div class=\"notes-head\">메모</div>", html_doc)
 
     def test_parse_ask_request_missing_query(self):
         with self.assertRaises(ValueError):
