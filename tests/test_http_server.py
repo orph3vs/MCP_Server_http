@@ -25,7 +25,8 @@ class HttpServerParsingTests(unittest.TestCase):
                     "user_query": "개인정보 제3자 제공 기준",
                     "context": "기준시점: 2025-01-01",
                     "request_id": "req-123",
-                }
+                },
+                ensure_ascii=False,
             ).encode("utf-8")
         )
         self.assertEqual(req.user_query, "개인정보 제3자 제공 기준")
@@ -62,7 +63,7 @@ class HttpServerParsingTests(unittest.TestCase):
 
     def test_parse_tool_request(self):
         fields = parse_tool_request(
-            json.dumps({"law_id": "L1", "article_no": "제1조"}).encode("utf-8"),
+            json.dumps({"law_id": "L1", "article_no": "제1조"}, ensure_ascii=False).encode("utf-8"),
             ("law_id", "article_no"),
         )
         self.assertEqual(fields["law_id"], "L1")

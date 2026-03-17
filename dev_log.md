@@ -2,325 +2,132 @@
 
 ## 목적
 
-이 문서는 `MyMcpServer`를 처음부터 다시 복원하거나 다른 PC에서 재구축할 때 참고하는 개발 기록이다.
-세부 설계는 `docs/`를 보고, 이 파일은 "무엇을 어떤 순서로 만들었는지"를 빠르게 따라가기 위한 요약본으로 쓴다.
+이 문서는 `MyMcpServer`를 다른 PC에서 다시 복구하거나, 현재 구조를 빠르게 이해하기 위한 개발 요약 문서다.
+세부 사용법은 `docs/`를 참고하고, 이 파일은 "무엇을 어떤 순서로 만들었는지"와 "현재 어디까지 안정화됐는지"를 정리한다.
 
-## 현재 상태 요약
+## 현재 기준선
 
-- 목표: 국가법령정보센터(NLIC) 기반 한국 법률 질의용 MCP 서버
-- 주요 인터페이스
-  - HTTP: `/ask`, `/tools/search_law`, `/tools/get_article`, `/tools/get_version`, `/tools/validate_article`, `/tools/search_precedent`, `/tools/get_precedent`, `/logs/recent`
-  - MCP stdio: `ask`, `answer_with_citations`, `search_law`, `get_article`, `get_version`, `validate_article`, `search_precedent`, `get_precedent`
-- 현재 강점
-  - MCP 연결 안정화 완료
-  - 법령/조문/버전/판례 조회 가능
-  - `/ask`에 관련 법령, 판례, 멀티에이전트 검토, 답변 조립 규칙 반영
-  - cost logger와 로그 조회 뷰 제공
-- 현재 단계
-  - 큰 기능 구현보다는 실사용 질문 기반 튜닝 단계
+- 현재 기준 버전: `v1 안정판`
+- v2 실험 분기:
+  - 한때 관련 법령 탐지 v2를 분리했지만, 비용/복잡도 대비 이점이 아직 부족하다고 판단해 롤백
+  - 현재는 다시 `v1` 기준으로 운영
 
-## 구현 연표
+## 주요 구현 내역
 
-### 1. NLIC wrapper 기본 구현
+### 1. NLIC wrapper 구축
 
-- `src/nlic_api_wrapper.py`
-- 구현한 기본 기능
+- 파일: [src/nlic_api_wrapper.py](C:\MCP_Server\MyMcpServer\src\nlic_api_wrapper.py)
+- 주요 기능:
   - `search_law`
   - `get_article`
   - `get_version`
   - `validate_article`
+  - `search_precedent`
+  - `get_precedent`
 
-### 2. `get_article` fallback 강화
+### 2. 조문 조회 fallback 강화
 
-- 조문 조회 실패에 대비해 `JO` 후보 확장 및 fallback 추가
-- 디버그용 필드 추가
+- `get_article`에서 `JO` 후보를 확장
+- 실패 시 다른 조회 경로로 재시도
+- 디버그 필드 추가:
   - `matched_via`
   - `attempted_queries`
   - `article_candidates`
 
-### 3. `get_version` fallback 강화
+### 3. 버전 조회 fallback 강화
 
-- `history` 응답이 비거나 불완전할 때 `law` 응답에서 시행일자, 공포일자, 제개정구분을 복원
+- `history` 응답이 비거나 약할 때 `law` 응답에서 시행일/공포일/개정구분을 복원
 
 ### 4. fixture 기반 회귀 테스트 도입
 
-- `tests/fixtures/nlic/`
-- 실제 API 응답 샘플을 고정해서 회귀 방지
+- 실제 API 응답 샘플을 `tests/fixtures/nlic/`에 저장
+- 실응답 기반 회귀 테스트로 파서 안정성 보강
 
-### 5. `/ask` pipeline enrichment 도입
+### 5. `/ask` 파이프라인 고도화
 
-- `src/request_pipeline.py`
-- 질문 처리 흐름에 아래를 추가
-  - 법령 검색
+- 파일: [src/request_pipeline.py](C:\MCP_Server\MyMcpServer\src\request_pipeline.py)
+- 포함 내용:
+  - 질문 의도 분류
+  - 관련 법령 힌트 기반 검색
   - 대표 법령 선택
-  - 버전 조회
-  - 조문 조회
-  - 필요 시 관련 조문 조회
+  - 버전/조문/판례 enrichment
+  - suggestion 저장
 
-### 6. `/ask` 응답 슬림화
+### 6. 답변 조립기 도입
 
-- MCP 소비자 입장에서 너무 무거운 원본 payload를 줄이고 요약형 citations 구조로 정리
+- 파일: [src/answer_composer.py](C:\MCP_Server\MyMcpServer\src\answer_composer.py)
+- 역할:
+  - 조문 유형별 설명 방식 분기
+  - 질문 의도별 답변 구조 분기
+  - 근거 블록, 판례 블록, 고위험 안내 정리
 
-### 7. MCP stdio 서버 구현
+### 7. 멀티에이전트 검토 파이프라인 도입
 
-- `src/mcp_stdio_server.py`
-- 구현 메서드
-  - `initialize`
-  - `tools/list`
-  - `tools/call`
-
-### 8. MCP handshake 문제 해결
-
-- stdio transport를 newline-delimited JSON 기준으로 수정
-- lazy pipeline init 적용
-- `resources/list`, `resources/templates/list` 호환 응답 추가
-
-### 9. MCP 실행 래퍼 추가
-
-- `run_mcp_stdio_server.cmd`
-- Python 경로, `-u`, 작업 디렉터리, unbuffered 실행을 고정
-
-### 10. `AnswerComposer` 도입
-
-- `src/answer_composer.py`
-- 최종 사용자용 답변을 조립하는 계층 분리
-- 답변에 아래를 구조화
-  - 법령명
-  - 조문번호
-  - 조문 요약
-  - 쉬운 설명
-  - 근거 블록
-
-### 11. 조문 유형 분류 추가
-
-- 현재 반영된 분류
-  - 목적
-  - 정의
-  - 적용범위
-  - 책무/의무
-  - 권리
-  - 신고/통지/보고
-  - 허가/등록
-  - 위임
-  - 예외/특례/적용배제
-  - 금지/제한
-  - 벌칙/과태료/과징금
-
-### 12. 질문 의도 분류 추가
-
-- 현재 반영된 의도
-  - 설명
-  - 위법 여부
-  - 비교
-  - 요건
-  - 절차
-  - 적용 가능성
-
-### 13. 비교/절차/적용 질문 강화
-
-- 질문에 여러 조문이 있으면 관련 조문을 함께 조회
-- 답변 블록 추가
-  - `[비교 요약]`
-  - `[비교 참고 조문]`
-  - `[판단 순서]`
-  - `[적용 판단 포인트]`
-  - `[절차 정리]`
-  - `[연관 조문]`
-
-### 14. 근거 블록 추가
-
-- 답변 하단에 `[근거]` 블록 자동 추가
-
-### 15. 멀티에이전트 역할 분리
-
-- `src/multi_agent_review.py`
-- 현재 agent
+- 파일: [src/multi_agent_review.py](C:\MCP_Server\MyMcpServer\src\multi_agent_review.py)
+- 주요 에이전트:
   - `StatuteReviewAgent`
   - `ComplianceAgent`
   - `PrecedentReviewAgent`
   - `RiskReviewerAgent`
-- low risk: statute + compliance
-- high risk: precedent + risk 추가
 
-### 16. 판례 검색 계층 추가
+현재 구조는 "에이전트별 판단 신호를 만들고 최종 답변에 반영하는 내부 검토형"에 가깝다.
 
-- `src/nlic_api_wrapper.py`
-  - `search_precedent`
-  - `get_precedent`
-- `src/request_pipeline.py`
-  - high-risk, 위법 여부, 적용 가능성, 판례 요청 시 precedent enrichment 수행
+### 8. MCP stdio 서버 구현
 
-### 17. 판례 relevance 반영
+- 파일: [src/mcp_stdio_server.py](C:\MCP_Server\MyMcpServer\src\mcp_stdio_server.py)
+- 지원 기능:
+  - `initialize`
+  - `tools/list`
+  - `tools/call`
+  - `resources/list`
+  - `resources/templates/list`
 
-- 답변에 `[참고 판례]` 블록 추가
-- review summary를 통해 판례가 왜 relevant한지 짧게 설명
+### 9. MCP handshake 안정화
 
-### 18. prompt loader 및 정책 반영
+- newline-delimited JSON 기준으로 stdio 처리
+- lazy pipeline init 적용
+- `run_mcp_stdio_server.cmd` 추가
 
-- `config/prompts/manifest.json`
-- `config/prompts/v1/system_prompt.md`
-- `config/prompts/v1/orchestration_prompt.md`
-- `src/prompt_loader.py`
-- prompt policy를 request pipeline과 answer composer에 반영
+### 10. cost logger 및 로그 뷰 확장
 
-### 19. 관련 법령 힌트 확장
+- 파일:
+  - [src/cost_logger.py](C:\MCP_Server\MyMcpServer\src\cost_logger.py)
+  - [src/http_server.py](C:\MCP_Server\MyMcpServer\src\http_server.py)
+- 현재 가능:
+  - request 로그
+  - tool 로그
+  - JSON / readable / table / HTML 뷰
 
-- `src/request_pipeline.py`의 `_RELATED_LAW_HINTS` 확장
-- 현재 강화된 분야
-  - 개인정보/보안
-  - 금융/신용/전자금융
-  - 이커머스
-  - 헬스케어/의료
-  - 세금
-  - 근로/채용
-  - 교육
-  - 청소년
-  - 노인복지
-  - 주택/아파트
-  - 위치정보/공공기록물
+### 11. law hint suggestion 흐름 도입
 
-### 20. cost logger 고도화
+- 파일: [src/law_hint_suggestions.py](C:\MCP_Server\MyMcpServer\src\law_hint_suggestions.py)
+- 흐름:
+  - `LawAPI` grounding 실패 시 suggestion 저장
+  - 승인/거절 가능
+  - 승인된 힌트는 이후 관련 법령 탐지에 반영
 
-- `src/cost_logger.py`
-- 저장 필드 확대
-  - 질문 의도
-  - error stage
-  - NLIC 호출 수
-  - 법령 검색 수
-  - 조문 조회 수
-  - 판례 검색/상세 조회 수
-  - 관련 법령 수
-- `/logs/recent` 확장
-  - raw JSON
-  - `view=readable`
-  - `view=table`
+## 현재 남은 과제
 
-### 21. LawAPI 실패 suggestion 승인 흐름 추가
+- 실사용 질문 기반 튜닝
+  - 관련 법령 힌트 보강
+  - grounding 약한 케이스 식별
+  - answer_with_citations 실패 케이스 추적
+- suggestion 기준 보강 여부 검토
+  - 현재는 `LawAPI 완전 실패` 위주로만 저장
 
-- `src/law_hint_suggestions.py`
-- `src/request_pipeline.py`
-- 질의 재작성에서 뽑은 결과를 재사용해서:
-  - `related_law_queries`
-  - `issue_terms`
-  - `search_queries`
-  - `proposed_keywords`
-  를 한 번만 계산
-- `LawAPI` 실패 시 자동으로 suggestion을 저장
-- suggestion은 바로 규칙에 반영하지 않고 승인 대기 상태로 유지
-- 승인된 suggestion만 동적 힌트 override로 반영
-- HTTP 엔드포인트 추가
-  - `GET /suggestions/law-hints`
-  - `POST /suggestions/law-hints/approve`
-  - `POST /suggestions/law-hints/reject`
+## 복구 우선순위
 
-### 22. MCP tool 공통 로그 및 오류 표기 보강
+다른 PC에서 다시 세팅할 때는 아래 순서를 추천한다.
 
-- `src/cost_logger.py`
-  - 로그 엔트리에 `entry_type`, `tool_name` 추가
-  - 질문 단위 로그(`request`)와 개별 MCP 도구 로그(`tool`)를 구분
-- `src/mcp_stdio_server.py`
-  - `search_law`, `get_article`, `get_version`, `validate_article`, `search_precedent`, `get_precedent` 호출도 로그 저장
-  - `ask`, `answer_with_citations`가 `PipelineResponse.error`를 반환하면 `isError=true`로 MCP 응답
-  - `tool_result_error name=... stage=... message=...` 형식으로 MCP 서버 로그 강화
-- `src/http_server.py`
-  - `/logs/recent`의 `readable`/`table` 뷰에 `request/tool`, `tool_name` 노출
-  - summary에 `질문로그수`, `도구로그수` 추가
+1. NLIC wrapper + 테스트 복구
+2. request pipeline + answer composer 복구
+3. MCP stdio 서버 복구
+4. HTTP 서버 및 로그 뷰 복구
+5. suggestion / 승인 흐름 복구
 
-### 23. HTML 로그 대시보드 추가
+## 최근 메모
 
-- `src/http_server.py`
-  - `/logs/recent?view=html` 추가
-  - 브라우저에서 바로 볼 수 있는 로그 대시보드 제공
-- 포함 기능
-  - 상단 요약 카드
-  - request/tool 구분 컬럼
-  - 오류 행 강조
-  - `전체 / 질문 로그만 / 도구 로그만` 필터
-  - 새로고침 버튼
-
-## 현재 판단
-
-- MCP 연결 및 stdio handshake: 안정화됨
-- 법령/조문/판례 조회: 실사용 가능한 수준
-- `/ask` 답변 품질: 질문 유형, 조문 유형, 판례 relevance, 관련 법령을 반영하는 수준까지 고도화됨
-- suggestion 승인 흐름: 구현 완료
-  - 다만 현재 트리거는 `LawAPI 완전 실패` 중심이라, 실사용 중 케이스를 보며 확장 여부 판단 예정
-- cost/logger: 운영 분석에 쓸 수 있는 수준까지 확장됨
-  - 질문 로그와 도구 로그를 분리해서 볼 수 있음
-- 현재 단계: 대형 기능 추가보다 실사용 질문 기반 튜닝 단계
-
-## 다음 운영 포인트
-
-1. 실제 질문을 던지면서
-   - 관련 법령을 놓치는지
-   - 판례가 과하거나 부족한지
-   - suggestion 후보가 필요한지
-   확인
-2. `error:LawAPI` 또는 grounding이 약한 질문이 반복되면
-   - 관련 법령 힌트 보강
-   - suggestion 승인 반영
-3. `answer_with_citations` 내부 오류가 다시 보이면
-   - `/logs/recent`
-   - `data/mcp_stdio_server.log`
-   두 곳을 같이 확인해 stage를 추적
-
-### 21. 생성물 정리
-
-- `.gitignore` 반영
-  - `__pycache__/`
-  - `*.pyc`
-  - `data/*.db`
-  - `data/*.log`
-- Git에 잘못 추적되던 생성물 추적 해제
-
-## 핵심 파일
-
-- NLIC wrapper: `src/nlic_api_wrapper.py`
-- request pipeline: `src/request_pipeline.py`
-- answer composer: `src/answer_composer.py`
-- multi-agent review: `src/multi_agent_review.py`
-- prompt loader: `src/prompt_loader.py`
-- MCP stdio server: `src/mcp_stdio_server.py`
-- HTTP server: `src/http_server.py`
-- cost logger: `src/cost_logger.py`
-- 로컬 실행기: `run_local.py`
-- MCP 실행 래퍼: `run_mcp_stdio_server.cmd`
-
-## 복원 순서 추천
-
-1. `src/nlic_api_wrapper.py`
-2. `src/request_pipeline.py`
-3. `src/http_server.py`
-4. `src/mcp_stdio_server.py`
-5. MCP handshake 확인
-6. `src/answer_composer.py`
-7. `src/multi_agent_review.py`
-8. `src/prompt_loader.py` + `config/prompts/`
-9. `src/cost_logger.py`
-10. 테스트 복원
-
-## 주의했던 문제
-
-- MCP stdio는 newline-delimited JSON 기준으로 맞춰야 했다
-- handshake 실패 시 `server_start`만 찍히고 `initialize`가 안 찍혔다
-- `get_article`는 `JO` 형식과 fallback 순서가 중요했다
-- 법률 답변은 자유 생성보다 서버가 답변 구조를 잡아주는 편이 안정적이었다
-- 판례는 "찾는 것"보다 "왜 relevant한지 설명하는 것"이 체감상 더 중요했다
-- cost logger는 단순 비용 기록보다 "왜 비쌌는지"가 보이게 만드는 것이 중요했다
-
-## 최근 상태
-
-- 2026-03-13: prompt-aware answer composition, review summary, precedent relevance 반영
-- 2026-03-13: related law enrichment와 prompt policy pipeline 반영
-- 2026-03-16: 관련 법령 키워드 힌트 대폭 확장
-- 2026-03-16: cost logger 스키마 확장
-- 2026-03-16: `/logs/recent?view=readable` 추가
-- 2026-03-16: `/logs/recent?view=table` 추가
-- 2026-03-16: cost log에 `question_summary`를 추가해 요청 ID 없이도 최근 로그에서 질문 맥락을 바로 읽을 수 있게 함
-- 2026-03-16: 법령명이 직접 없는 질문을 위해 `관련 법령명 + 이슈` 형태의 query rewriting을 추가하고, `도서관법` 힌트를 보강함
-- 2026-03-16: 생성물(`pyc`, cache, db/log tracking`) 정리
-
-## 최근 테스트 결과
-
-- 전체 테스트 통과
-- 최신 기준: `Ran 66 tests`, `OK`
+- 2026-03-17:
+  - retrieval v2 분기 실험 후 롤백
+  - 현재는 다시 `v1 안정판` 기준으로 운영
+  - 로그 뷰/도구 로그/HTML 대시보드는 유지
