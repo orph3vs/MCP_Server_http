@@ -170,9 +170,11 @@ class CostLogger:
             )
             conn.commit()
 
-    def list_recent(self, limit: int = 50) -> List[CostLogEntry]:
+    def list_recent(self, limit: int = 100, offset: int = 0) -> List[CostLogEntry]:
         if limit <= 0:
             raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
 
         with self._connection() as conn:
             rows = conn.execute(
@@ -185,8 +187,9 @@ class CostLogger:
                 FROM request_cost_logs
                 ORDER BY id DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (limit,),
+                (limit, offset),
             ).fetchall()
 
         return [
@@ -266,8 +269,8 @@ class CostLogger:
             has_related_laws=bool(row[23]),
         )
 
-    def summarize_recent(self, limit: int = 50) -> dict[str, float | int]:
-        rows = self.list_recent(limit=limit)
+    def summarize_recent(self, limit: int = 100, offset: int = 0) -> dict[str, float | int]:
+        rows = self.list_recent(limit=limit, offset=offset)
         if not rows:
             return {
                 "count": 0,

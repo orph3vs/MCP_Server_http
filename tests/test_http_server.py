@@ -7,6 +7,7 @@ from src.cost_logger import CostLogEntry
 from src.http_server import (
     parse_ask_request,
     parse_recent_limit,
+    parse_recent_page,
     parse_recent_view,
     parse_tool_request,
     render_log_html,
@@ -63,14 +64,21 @@ class HttpServerParsingTests(unittest.TestCase):
 
     def test_parse_tool_request(self):
         fields = parse_tool_request(
-            json.dumps({"law_id": "L1", "article_no": "제1조"}, ensure_ascii=False).encode("utf-8"),
+            json.dumps(
+                {"law_id": "L1", "article_no": "제1조"},
+                ensure_ascii=False,
+            ).encode("utf-8"),
             ("law_id", "article_no"),
         )
         self.assertEqual(fields["law_id"], "L1")
+        self.assertEqual(fields["article_no"], "제1조")
 
     def test_parse_recent_limit(self):
         self.assertEqual(parse_recent_limit("/logs/recent?limit=7"), 7)
         self.assertEqual(parse_recent_limit("/logs/recent?limit=1000"), 100)
+
+    def test_parse_recent_page(self):
+        self.assertEqual(parse_recent_page("/logs/recent?page=2"), 2)
 
     def test_parse_recent_view(self):
         self.assertEqual(parse_recent_view("/logs/recent"), "raw")
@@ -101,8 +109,8 @@ class HttpServerParsingTests(unittest.TestCase):
         )
         self.assertEqual(item["로그종류"], "tool")
         self.assertEqual(item["도구명"], "search_law")
-        self.assertEqual(item["질문요약"], "개인정보 보호법 위법 여부 질문")
-        self.assertEqual(item["질문유형"], "위법 여부형")
+        self.assertEqual(item["질문미리보기"], "개인정보 보호법 위법 여부 질문")
+        self.assertEqual(item["질문의도"], "위법 여부형")
         self.assertTrue(item["판례포함여부"])
         self.assertTrue(any("판례 검색" in note for note in item["해석메모"]))
 
@@ -154,6 +162,8 @@ class HttpServerParsingTests(unittest.TestCase):
             ],
             {
                 "count": 1,
+                "request_entry_count": 0,
+                "tool_entry_count": 1,
                 "total_cost": 0.001,
                 "avg_latency": 30.5,
                 "avg_nlic_calls": 4.0,
@@ -166,7 +176,7 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertIn("요청ID", table)
         self.assertIn("종류", table)
         self.assertIn("도구", table)
-        self.assertIn("질문요약", table)
+        self.assertIn("질문미리보기", table)
         self.assertIn("개인정보 보호법 위법 여부 질문", table)
         self.assertIn("req-1", table)
         self.assertIn("메모:", table)
@@ -207,6 +217,7 @@ class HttpServerParsingTests(unittest.TestCase):
                 "high_risk_count": 1,
                 "error_count": 0,
             },
+            has_next=False,
         )
         self.assertIn("<!doctype html>", html_doc.lower())
         self.assertIn("MyMcpServer Logs", html_doc)
@@ -215,6 +226,8 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertIn("로그 종류 필터", html_doc)
         self.assertIn("새로고침", html_doc)
         self.assertIn("error-row", html_doc)
+        self.assertIn("다음 100개", html_doc)
+        self.assertIn("disabled", html_doc)
 
     def test_parse_ask_request_missing_query(self):
         with self.assertRaises(ValueError):
