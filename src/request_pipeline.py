@@ -110,84 +110,6 @@ class RequestPipeline:
         "illegality": ("위법", "불법", "허용", "가능한지", "문제되는지", "판단"),
         "applicability": ("적용", "대상", "포함", "제외"),
     }
-    _V2_CONTEXTUAL_LAW_HINTS = {
-        "媛쒖씤?뺣낫 蹂댄샇踰?": (
-            "개인정보",
-            "이름",
-            "연락처",
-            "주소",
-            "휴대폰",
-            "동의",
-            "제3자 제공",
-            "마스킹",
-            "비식별",
-            "보관",
-            "파기",
-        ),
-        "?꾩옄?곴굅???깆뿉?쒖쓽 ?뚮퉬?먮낫?몄뿉 愿??踰뺣쪧": (
-            "온라인 플랫폼",
-            "플랫폼",
-            "판매자",
-            "구매자",
-            "주문",
-            "배송",
-            "환불",
-            "청약철회",
-            "거래기록",
-            "구매확정",
-            "소비자",
-        ),
-        "?꾩옄湲덉쑖嫄곕옒踰?": (
-            "결제",
-            "pg",
-            "간편결제",
-            "전자지급",
-            "정산",
-            "핀테크",
-        ),
-        "?좎슜?뺣낫???댁슜 諛?蹂댄샇??愿??踰뺣쪧": (
-            "신용정보",
-            "마이데이터",
-            "신용조회",
-            "개인신용정보",
-            "cb",
-            "kcb",
-            "nice",
-        ),
-        "洹쇰줈湲곗?踰?": (
-            "근로자",
-            "근로",
-            "임금",
-            "급여",
-            "출근",
-            "퇴직",
-            "휴게",
-        ),
-        "?뚮뱷?몃쾿": (
-            "원천징수",
-            "기타소득",
-            "사업소득",
-            "지급명세서",
-            "강사비",
-            "강의료",
-        ),
-        "怨듬룞二쇳깮愿由щ쾿": (
-            "아파트",
-            "입주자",
-            "소유자",
-            "관리사무소",
-            "입주자 명부",
-            "관리주체",
-        ),
-        "?꾩꽌愿踰?": (
-            "도서관",
-            "작은도서관",
-            "출석부",
-            "사서",
-            "대출",
-            "정산 증빙",
-        ),
-    }
     _PRECEDENT_REQUEST_KEYWORDS = (
         "판례",
         "대법원",
@@ -451,11 +373,6 @@ class RequestPipeline:
                 results.append(article_no)
         return results
 
-    @classmethod
-    def _extract_article_no(cls, question: str) -> Optional[str]:
-        article_numbers = cls._extract_article_numbers(question)
-        return article_numbers[0] if article_numbers else None
-
     @staticmethod
     def _merge_context(base_context: Optional[str], lines: List[str]) -> Optional[str]:
         extra = "\n".join(line for line in lines if line)
@@ -531,30 +448,6 @@ class RequestPipeline:
                 seen_ids.add(key)
                 merged_items.append(item)
         return {"LawSearch": {"law": merged_items}}
-
-    @classmethod
-    def _precedent_search_queries(
-        cls,
-        user_query: str,
-        used_search_query: Optional[str],
-        article_numbers: List[str],
-    ) -> List[str]:
-        queries: List[str] = []
-        if used_search_query and article_numbers:
-            for article_no in article_numbers[:2]:
-                queries.append(f"{used_search_query} {article_no}")
-        if used_search_query:
-            queries.append(f"{used_search_query} 판례")
-        queries.append(user_query)
-
-        deduped: List[str] = []
-        seen = set()
-        for query in queries:
-            normalized = cls._clean_text(query)
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                deduped.append(normalized)
-        return deduped
 
     @classmethod
     def _precedent_search_queries_refined(
