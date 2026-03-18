@@ -757,7 +757,7 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
             _json_response(self, 500, {"error": f"internal_error:{exc}"})
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     server = ThreadingHTTPServer((host, port), PipelineHttpHandler)
     print(f"[request-pipeline-server] listening on http://{host}:{port}")
     server.serve_forever()

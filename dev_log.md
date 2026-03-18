@@ -71,7 +71,7 @@
   - `python -m src.mcp_http_server`
   - `run_mcp_http_server.cmd`
 - Runtime split:
-  - `8000`: REST/log inspection
+  - `8000`: REST/log inspection (localhost only)
   - `8001`: MCP transport
 - If behavior seems old after code edits, restart the running server process before debugging further.
 

@@ -33,6 +33,7 @@ curl http://localhost:8000/health
 
 정상 기준:
 - `{"status": "ok"}` 응답
+- `src.http_server`는 기본적으로 `127.0.0.1:8000`에만 바인딩됩니다.
 
 ## 4) HTTP 질의 요청
 (선택) metadata/history를 함께 보내면 서버가 context를 자동 조립합니다.

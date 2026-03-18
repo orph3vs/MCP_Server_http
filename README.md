@@ -29,7 +29,7 @@
 - `run_local.py`: 로컬 단건 실행 스크립트
 
 ## Runtime Notes
-- `src.http_server`는 `8000` 포트에서 REST/로그 확인용으로 사용합니다.
+- `src.http_server`는 `127.0.0.1:8000`에서 REST/로그 확인용으로 사용합니다.
 - `src.mcp_http_server`는 `8001` 포트에서 MCP 연결용으로 사용합니다.
 - 외부 공개가 필요할 때는 `ngrok`를 `8001`에만 연결하면 됩니다.
 - 질문 처리 로그는 SQLite `data/cost_logs.db`에 저장되고, `8000`의 `/logs/recent`는 그 DB를 조회하는 화면입니다.
