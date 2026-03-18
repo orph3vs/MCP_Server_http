@@ -75,6 +75,30 @@
   - `8001`: MCP transport
 - If behavior seems old after code edits, restart the running server process before debugging further.
 
+## Recent Retrieval Tuning
+- Sensitive-identifier questions now expand beyond the first matched law:
+  - related-law expansion via `lsRlt`
+  - follow-up search over connected laws
+  - decree-level lookup prioritized when direct permission grounds are likely to matter
+- Keyword-guided article scanning now supports direct article pickup from full law payloads, rather than waiting for explicit article numbers in the user query.
+- For school-out-youth / resident-number questions, the current stable behavior is:
+  - primary grounding can move to `청소년복지 지원법 시행령`
+  - direct subclauses can be surfaced together when more than one is materially relevant
+  - answer text can include a `[직접 관련 항목]` block
+
+## Direct Clause Handling
+- The retrieval layer no longer stops at `조` level only.
+- When a matched article contains relevant `항/호/목`, the pipeline can preserve multiple matched clauses.
+- Current intended behavior is to show 2-3 highly relevant clause-level items rather than a single narrowed clause when the question reasonably spans multiple statutory tasks.
+
+## Error Handling Notes
+- `get_article` previously failed hard when one attempted NLIC article route returned `HTTP 404`.
+- Current behavior:
+  - treat per-attempt 404 as a recoverable miss
+  - continue trying the next `JO` candidate / target combination
+  - only surface failure after candidate exhaustion
+- This materially reduced unnecessary follow-up raw tool calls from the client and improved the chance that `ask` can finish in one pass.
+
 ## Recommended Next Work
 - Tune based on real user questions.
 - Expand related-law hints only when repeated misses appear.

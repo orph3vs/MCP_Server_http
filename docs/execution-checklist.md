@@ -120,3 +120,8 @@ curl -X POST http://localhost:8001/mcp \
 - `ngrok`를 쓸 때는 `ngrok http 8001`만 실행하면 됩니다.
 - `8000`을 끄고 질문을 보내도 로그는 `data/cost_logs.db`에 쌓여야 하며, 나중에 `8000`을 다시 켜서 `/logs/recent`로 조회할 수 있습니다.
 - `ask` 호출 후에는 request 로그를, `search_law`/`validate_article` 호출 후에는 tool 로그를 확인하면 됩니다.
+## 8) Recent Runtime Notes
+- Some NLIC article routes may return `HTTP 404` while probing candidate article numbers.
+- Current behavior is to keep trying the next article candidate instead of failing the whole `get_article` call immediately.
+- Because of this, recent legal questions may complete with fewer follow-up raw tool calls and more `ask`-only completions.
+- If a just-fixed behavior still looks old, restart the running server before debugging further.
