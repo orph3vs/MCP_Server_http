@@ -1,6 +1,7 @@
 import json
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 
 from src.nlic_api_wrapper import NlicApiWrapper
 
@@ -137,6 +138,24 @@ class LiveFixtureNlicApiWrapper(NlicApiWrapper):
         return {}
 
 
+class RetryOnHttp404FakeNlicApiWrapper(FakeNlicApiWrapper):
+    def _request(self, params, endpoint_url=None):
+        if (
+            endpoint_url == self.service_url
+            and params.get("target") == "law"
+            and params.get("ID") == "L1"
+            and params.get("JO") == "제1조"
+        ):
+            raise HTTPError(
+                url="https://example.test",
+                code=404,
+                msg="Not Found",
+                hdrs=None,
+                fp=None,
+            )
+        return super()._request(params, endpoint_url=endpoint_url)
+
+
 class NlicApiWrapperTests(unittest.TestCase):
     def test_search_law_and_cache(self):
         api = FakeNlicApiWrapper()
@@ -185,6 +204,16 @@ class NlicApiWrapperTests(unittest.TestCase):
         article = api.get_article("L1", "제999조")
         self.assertFalse(article["found"])
         self.assertIsNone(article["article_text"])
+
+    def test_get_article_retries_after_http_404(self):
+        api = RetryOnHttp404FakeNlicApiWrapper()
+        article = api.get_article("L1", "제1조")
+
+        self.assertTrue(article["found"])
+        self.assertEqual(article["matched_via"], "service:law:mst")
+        self.assertTrue(
+            any(query.get("error") == "HTTP 404" for query in article["attempted_queries"])
+        )
 
     def test_get_version(self):
         api = FakeNlicApiWrapper()

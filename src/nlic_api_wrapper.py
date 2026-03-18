@@ -18,6 +18,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -272,7 +273,11 @@ class NlicApiWrapper:
 
         for endpoint, target, params in attempts:
             attempted_queries.append({"endpoint": endpoint, "target": target, "params": dict(params)})
-            source = self._call(target, params, endpoint=endpoint)
+            try:
+                source = self._call(target, params, endpoint=endpoint)
+            except HTTPError as exc:
+                attempted_queries[-1]["error"] = f"HTTP {exc.code}"
+                continue
             article_text = self._extract_article_text(source, normalized_article_no)
             if article_text:
                 matched_via = f"{endpoint}:{target}"
@@ -292,11 +297,15 @@ class NlicApiWrapper:
                                 "params": {"MST": mst, "JO": jo_value},
                             }
                         )
-                        mst_source = self._call(
-                            target,
-                            {"MST": mst, "JO": jo_value},
-                            endpoint="service",
-                        )
+                        try:
+                            mst_source = self._call(
+                                target,
+                                {"MST": mst, "JO": jo_value},
+                                endpoint="service",
+                            )
+                        except HTTPError as exc:
+                            attempted_queries[-1]["error"] = f"HTTP {exc.code}"
+                            continue
                         mst_text = self._extract_article_text(mst_source, normalized_article_no)
                         if mst_text:
                             source = mst_source
