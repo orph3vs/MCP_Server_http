@@ -65,6 +65,7 @@
 - Approved suggestions are intended to strengthen related-law hints later.
 
 ## Recovery / Restart Notes
+- `NLIC_OC` is now expected from the runtime environment rather than a code default.
 - HTTP server restart:
   - `python -m src.http_server`
 - MCP HTTP server restart:

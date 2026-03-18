@@ -37,14 +37,14 @@ class NlicApiWrapper:
 
     def __init__(
         self,
-        oc: Optional[str] = "orph3vs_mcpserver",
+        oc: Optional[str] = None,
         base_url: str = DEFAULT_BASE_URL,
         service_url: str = DEFAULT_SERVICE_URL,
         cache_ttl_seconds: int = 300,
     ) -> None:
         oc_value = oc or os.getenv("NLIC_OC")
         if not oc_value:
-            raise ValueError("oc is required")
+            raise ValueError("NLIC_OC is required")
         if cache_ttl_seconds <= 0:
             raise ValueError("cache_ttl_seconds must be positive")
 

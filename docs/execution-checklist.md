@@ -11,6 +11,11 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - 마지막에 `OK`
 - `Ran ... tests` 출력
 
+실행 전 준비:
+```bash
+export NLIC_OC="your-oc-value"
+```
+
 ## 2) 로컬 단건 실행
 ```bash
 python run_local.py "개인정보 제3자 제공 기준" --context "기준시점: 2025-01-01"

@@ -29,6 +29,7 @@
 - `run_local.py`: 로컬 단건 실행 스크립트
 
 ## Runtime Notes
+- 실행 전 `NLIC_OC` 환경변수를 설정해야 합니다.
 - `src.http_server`는 `127.0.0.1:8000`에서 REST/로그 확인용으로 사용합니다.
 - `src.mcp_stdio_server`는 로컬 MCP 클라이언트의 stdio 연결용으로 사용할 수 있습니다.
 - `src.mcp_http_server`는 `8001` 포트에서 MCP 연결용으로 사용합니다.
@@ -37,6 +38,12 @@
 - stdio와 HTTP는 같은 코어(`RequestPipeline`, `McpServer`)를 공유하므로 필요하면 둘 다 병행해서 사용할 수 있습니다.
 
 - 보안 주의: NLIC OC 값은 공개 문서에 기재하지 마세요.
+
+예시:
+```bash
+export NLIC_OC="your-oc-value"
+python -m src.mcp_http_server
+```
 
 ## 진행 방식
 - 본 저장소의 상세 설계/정책/플로우는 README가 아닌 `docs/` 하위 문서에서 관리합니다.
