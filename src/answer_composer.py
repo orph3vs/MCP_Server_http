@@ -380,6 +380,22 @@ class AnswerComposer:
         return "\n".join(lines)
 
     @classmethod
+    def _matched_clauses_block(cls, matched_clauses: List[Dict[str, Any]]) -> Optional[str]:
+        valid_clauses = [
+            clause
+            for clause in matched_clauses
+            if isinstance(clause, dict) and clause.get("article_no") and clause.get("article_text")
+        ]
+        if not valid_clauses:
+            return None
+
+        lines = ["[직접 관련 항목]"]
+        for clause in valid_clauses[:3]:
+            excerpt = cls._truncate_text(str(clause.get("article_text", "")), 120)
+            lines.append(f"- {clause['article_no']}: {excerpt}")
+        return "\n".join(lines)
+
+    @classmethod
     def _evidence_block(
         cls,
         law_name: str,
@@ -424,6 +440,7 @@ class AnswerComposer:
         article_text = self._clean_text(str(article.get("article_text", "")))
         article_no = self._clean_text(str(article.get("article_no", "")))
         article_link = self._clean_text(str(article.get("article_link", ""))) or None
+        matched_clauses = article.get("matched_clauses") or []
         article_title = self._extract_article_title(article_text) if article_text else None
         intent = self._question_intent(composition_input.user_query)
 
@@ -458,6 +475,10 @@ class AnswerComposer:
 
             if version_fields.get("시행일자"):
                 lines.extend(["", f"기준 정보: 현재 확인한 시행일자는 {version_fields['시행일자']}입니다."])
+
+            matched_clauses_block = self._matched_clauses_block(matched_clauses)
+            if matched_clauses_block:
+                lines.extend(["", matched_clauses_block])
 
             precedent_block = self._precedent_block(law_enrichment)
             if precedent_block:

@@ -20,6 +20,23 @@ class FakeNlicApiWrapper(NlicApiWrapper):
         if target == "law" and params.get("query"):
             return {"law": [{"id": "L1", "name": params["query"]}]}
 
+        if target == "lsRlt":
+            if params.get("ID") == "L1":
+                return {
+                    "lsRltSearch": {
+                        "법령": {
+                            "관련법령": [
+                                {
+                                    "관련법령ID": "B1",
+                                    "관련법령명": "기본법",
+                                    "관련법령본문조회": "https://www.law.go.kr/법령/기본법",
+                                }
+                            ]
+                        }
+                    }
+                }
+            return {"lsRltSearch": {"법령": {"관련법령": []}}}
+
         if target == "prec" and params.get("query"):
             return {
                 "PrecSearch": {
@@ -217,6 +234,12 @@ class NlicApiWrapperTests(unittest.TestCase):
         self.assertEqual(versions["version_fields"]["공포일자"], "20250401")
         self.assertEqual(versions["version_fields"]["제개정구분명"], "일부개정")
 
+
+    def test_search_related_laws(self):
+        api = FakeNlicApiWrapper()
+        result = api.search_related_laws(law_id="L1")
+
+        self.assertEqual(result["lsRltSearch"]["법령"]["관련법령"][0]["관련법령ID"], "B1")
 
 if __name__ == "__main__":
     unittest.main()

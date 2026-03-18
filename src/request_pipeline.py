@@ -196,6 +196,22 @@ class RequestPipeline:
         return []
 
     @staticmethod
+    def _extract_related_law_items(related_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(related_data, dict):
+            return []
+
+        nested = related_data.get("lsRltSearch")
+        if isinstance(nested, dict):
+            law = nested.get("법령")
+            if isinstance(law, dict):
+                items = law.get("관련법령")
+                if isinstance(items, list):
+                    return [item for item in items if isinstance(item, dict)]
+                if isinstance(items, dict):
+                    return [items]
+        return []
+
+    @staticmethod
     def _extract_precedent_items(precedent_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(precedent_data, dict):
             return []
@@ -289,6 +305,39 @@ class RequestPipeline:
             if any(hint in normalized for hint in hints):
                 found_terms.append(canonical)
         return found_terms
+
+    @classmethod
+    def _is_sensitive_identifier_question(cls, user_query: str) -> bool:
+        normalized = cls._clean_text(user_query)
+        keywords = ("주민등록번호", "고유식별정보", "민감정보")
+        return any(keyword in normalized for keyword in keywords)
+
+    @classmethod
+    def _sensitive_identifier_keywords(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        keywords = ["주민등록번호", "고유식별정보", "민감정보", "처리할 수", "불가피"]
+        if "동의" in normalized:
+            keywords.append("동의")
+        if "학교밖청소년" in normalized or "학교 밖 청소년" in normalized:
+            keywords.extend(
+                [
+                    "학교밖청소년지원센터",
+                    "학교 밖 청소년",
+                    "가정 밖 청소년",
+                    "청소년상담복지센터",
+                    "통합정보시스템",
+                ]
+            )
+        if "통합정보시스템" in normalized or "시스템" in normalized:
+            keywords.append("통합정보시스템")
+
+        deduped: List[str] = []
+        seen = set()
+        for keyword in keywords:
+            if keyword not in seen:
+                seen.add(keyword)
+                deduped.append(keyword)
+        return deduped
 
     @classmethod
     def _extract_precedent_issue_terms(cls, user_query: str) -> List[str]:
@@ -480,6 +529,201 @@ class RequestPipeline:
         return {"LawSearch": {"law": merged_items}}
 
     @classmethod
+    def _merge_related_law_items(
+        cls,
+        law_data: Dict[str, Any],
+        related_items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged_items = list(cls._extract_law_items(law_data))
+        seen_ids = set()
+        for item in merged_items:
+            law_id = item.get("법령ID") or item.get("법령일련번호") or item.get("id")
+            if law_id is not None:
+                seen_ids.add(str(law_id).strip())
+
+        for item in related_items:
+            law_id = item.get("관련법령ID") or item.get("법령ID") or item.get("id")
+            law_name = item.get("관련법령명") or item.get("법령명한글") or item.get("name")
+            key = str(law_id).strip() if law_id is not None else cls._clean_text(str(law_name or item))
+            if not key or key in seen_ids:
+                continue
+            seen_ids.add(key)
+            merged_items.append(
+                {
+                    "법령ID": str(law_id).strip() if law_id is not None else None,
+                    "법령명한글": str(law_name).strip() if law_name is not None else None,
+                    "법령상세링크": item.get("관련법령본문조회"),
+                    "법령일련번호": str(law_id).strip() if law_id is not None else None,
+                }
+            )
+
+        return {"LawSearch": {"law": merged_items}}
+
+    @classmethod
+    def _related_law_priority(cls, item: Dict[str, Any]) -> int:
+        relation = cls._clean_text(str(item.get("법령간관계") or ""))
+        if "개별법" in relation:
+            return 0
+        if "기본법" in relation:
+            return 1
+        if "하위법" in relation:
+            return 2
+        return 3
+
+    @classmethod
+    def _law_name_tokens(cls, text: str) -> List[str]:
+        tokens = re.findall(r"[가-힣A-Za-z0-9]+", cls._clean_text(text))
+        stopwords = {
+            "법",
+            "시행령",
+            "시행규칙",
+            "관한",
+            "위한",
+            "대한",
+            "등",
+            "청소년",
+            "지원",
+        }
+        return [token for token in tokens if len(token) >= 2 and token not in stopwords]
+
+    @classmethod
+    def _related_law_relevance(
+        cls,
+        item: Dict[str, Any],
+        *,
+        user_query: str,
+        primary_law_name: str,
+    ) -> int:
+        law_name = cls._clean_text(str(item.get("관련법령명") or ""))
+        if not law_name:
+            return 0
+
+        relation = cls._clean_text(str(item.get("법령간관계") or ""))
+        query_tokens = set(cls._law_name_tokens(user_query))
+        primary_tokens = set(cls._law_name_tokens(primary_law_name))
+        law_tokens = set(cls._law_name_tokens(law_name))
+
+        overlap_score = len(query_tokens & law_tokens) * 3
+        overlap_score += len(primary_tokens & law_tokens) * 2
+        if "개별법" in relation:
+            overlap_score += 6
+        elif "기본법" in relation:
+            overlap_score += 2
+        elif "하위법" in relation:
+            overlap_score -= 2
+
+        normalized_query = cls._clean_text(user_query)
+        if "학교밖청소년" in normalized_query or "학교 밖 청소년" in normalized_query:
+            if "학교 밖 청소년" in law_name:
+                overlap_score += 2
+            if "복지" in law_name or "지원" in law_name:
+                overlap_score += 4
+            if "성보호" in law_name:
+                overlap_score -= 6
+            if "지원센터" in normalized_query or "센터" in normalized_query:
+                if "복지" in law_name:
+                    overlap_score += 8
+                if "학교 밖 청소년 지원에 관한 법률" in law_name:
+                    overlap_score -= 3
+
+        if "주민등록번호" in normalized_query or "고유식별정보" in normalized_query:
+            if "복지" in law_name or "지원" in law_name:
+                overlap_score += 2
+            if "하위법" in relation and "학교 밖 청소년" in law_name:
+                overlap_score -= 6
+
+        return overlap_score
+
+    @classmethod
+    def _expanded_related_search_queries(
+        cls,
+        related_items: List[Dict[str, Any]],
+        *,
+        user_query: str,
+        primary_law_name: str,
+    ) -> List[str]:
+        queries: List[str] = []
+        normalized_query = cls._clean_text(user_query)
+        base_primary_name = primary_law_name.replace(" 시행령", "").replace(" 시행규칙", "").strip()
+        ordered_items = sorted(
+            [item for item in related_items if isinstance(item, dict)],
+            key=lambda item: (
+                -cls._related_law_relevance(item, user_query=user_query, primary_law_name=primary_law_name),
+                cls._related_law_priority(item),
+                cls._clean_text(str(item.get("관련법령명") or "")),
+            ),
+        )
+        for item in ordered_items[:6]:
+            law_name = cls._clean_text(str(item.get("관련법령명") or ""))
+            relation = cls._clean_text(str(item.get("법령간관계") or ""))
+            if not law_name:
+                continue
+            if (
+                ("주민등록번호" in normalized_query or "고유식별정보" in normalized_query or "민감정보" in normalized_query)
+                and "하위법" in relation
+                and base_primary_name
+                and base_primary_name in law_name
+            ):
+                continue
+            if not law_name.endswith("시행령") and not law_name.endswith("시행규칙"):
+                queries.append(f"{law_name} 시행령")
+            queries.append(law_name)
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            if query and query not in seen:
+                seen.add(query)
+                deduped.append(query)
+        return deduped
+
+    def _expand_related_law_network(
+        self,
+        law_data: Dict[str, Any],
+        metrics: Optional[Dict[str, int]] = None,
+        max_hops: int = 2,
+    ) -> List[Dict[str, Any]]:
+        if not hasattr(self.law_api, "search_related_laws"):
+            return []
+
+        primary_law = self._pick_primary_law(law_data)
+        if not primary_law:
+            return []
+
+        seed_ids: List[str] = []
+        primary_law_id = primary_law.get("law_id")
+        if primary_law_id:
+            seed_ids.append(str(primary_law_id))
+
+        expanded: List[Dict[str, Any]] = []
+        seen_ids = set(seed_ids)
+        frontier = seed_ids[:]
+
+        for _ in range(max_hops):
+            if not frontier:
+                break
+            next_frontier: List[str] = []
+            for law_id in frontier:
+                if metrics is not None:
+                    self._increment_metric(metrics, "law_search_count")
+                    self._increment_metric(metrics, "nlic_calls")
+                try:
+                    related_data = self.law_api.search_related_laws(law_id=law_id)
+                except Exception:
+                    continue
+                for item in self._extract_related_law_items(related_data):
+                    related_law_id = item.get("관련법령ID") or item.get("법령ID") or item.get("id")
+                    key = str(related_law_id).strip() if related_law_id is not None else self._clean_text(str(item))
+                    if not key or key in seen_ids:
+                        continue
+                    seen_ids.add(key)
+                    expanded.append(item)
+                    next_frontier.append(key)
+            frontier = next_frontier
+
+        return expanded
+
+    @classmethod
     def _precedent_search_queries_refined(
         cls,
         user_query: str,
@@ -531,6 +775,40 @@ class RequestPipeline:
             self._increment_metric(metrics, "nlic_calls")
         return self.law_api.get_article(law_id=law_id, article_no=article_no)
 
+    def _find_keyword_matched_article(
+        self,
+        *,
+        user_query: str,
+        law_items: List[Dict[str, Any]],
+        metrics: Optional[Dict[str, int]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not self._is_sensitive_identifier_question(user_query):
+            return None
+        if not hasattr(self.law_api, "find_article_by_keywords"):
+            return None
+
+        keywords = self._sensitive_identifier_keywords(user_query)
+        for item in law_items[:8]:
+            if not isinstance(item, dict):
+                continue
+            law_id = item.get("법령ID") or item.get("법령일련번호") or item.get("id")
+            law_name = self._clean_text(
+                str(item.get("법령명한글") or item.get("법령명") or item.get("name") or "")
+            )
+            if not law_id:
+                continue
+            if metrics is not None:
+                self._increment_metric(metrics, "article_fetch_count")
+                self._increment_metric(metrics, "nlic_calls")
+            try:
+                matched = self.law_api.find_article_by_keywords(str(law_id), keywords)
+            except Exception:
+                continue
+            if matched and matched.get("article_no"):
+                matched["law_name"] = law_name
+                return matched
+        return None
+
     def _build_law_enrichment(
         self,
         user_query: str,
@@ -539,14 +817,35 @@ class RequestPipeline:
         risk_level: str = "LOW",
         metrics: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
+        all_laws = self._extract_law_items(law_data)
+        keyword_matched_article = self._find_keyword_matched_article(
+            user_query=user_query,
+            law_items=all_laws,
+            metrics=metrics,
+        )
+        if keyword_matched_article:
+            matched_law_id = keyword_matched_article.get("law_id")
+            matched_item = next(
+                (
+                    item
+                    for item in all_laws
+                    if str(item.get("법령ID") or item.get("법령일련번호") or item.get("id") or "").strip()
+                    == str(matched_law_id).strip()
+                ),
+                None,
+            )
+            if matched_item:
+                reordered = [matched_item] + [item for item in all_laws if item is not matched_item]
+                law_data = {"LawSearch": {"law": reordered}}
+                all_laws = reordered
+
         primary_law = self._pick_primary_law(law_data)
         enrichment: Dict[str, Any] = {
-            "search_hit_count": len(self._extract_law_items(law_data)),
+            "search_hit_count": len(all_laws),
             "primary_law": primary_law,
         }
-        all_laws = self._extract_law_items(law_data)
         related_laws = []
-        for item in all_laws[1:4]:
+        for item in all_laws[1:6]:
             law_id = item.get("법령ID") or item.get("법령일련번호") or item.get("id")
             law_name = item.get("법령명한글") or item.get("법령명_한글") or item.get("name")
             related_laws.append(
@@ -573,7 +872,17 @@ class RequestPipeline:
             except Exception as exc:
                 enrichment["version_error"] = str(exc)
 
-        if article_numbers:
+        if keyword_matched_article:
+            enrichment["article"] = {
+                "law_id": keyword_matched_article.get("law_id"),
+                "article_no": keyword_matched_article.get("article_no"),
+                "article_base_no": keyword_matched_article.get("article_base_no"),
+                "found": True,
+                "matched_via": keyword_matched_article.get("matched_via"),
+                "article_text": keyword_matched_article.get("article_text"),
+                "matched_clauses": keyword_matched_article.get("matched_clauses", []),
+            }
+        elif article_numbers:
             try:
                 enrichment["article"] = self._fetch_article(
                     law_id=law_id,
@@ -738,7 +1047,18 @@ class RequestPipeline:
             "found": True,
             "matched_via": article.get("matched_via"),
             "article_text_excerpt": RequestPipeline._truncate_text(str(article.get("article_text", "")), 180),
-            "article_link": self._service_link(article.get("law_id"), article.get("article_no")),
+            "article_link": self._service_link(
+                article.get("law_id"),
+                article.get("article_base_no") or article.get("article_no"),
+            ),
+            "matched_clauses": [
+                {
+                    "article_no": clause.get("article_no"),
+                    "article_text_excerpt": RequestPipeline._truncate_text(str(clause.get("article_text", "")), 120),
+                }
+                for clause in (article.get("matched_clauses") or [])
+                if isinstance(clause, dict) and clause.get("article_no")
+            ],
         }
 
     def _summarize_law_enrichment(self, enrichment: Dict[str, Any]) -> Dict[str, Any]:
@@ -860,6 +1180,28 @@ class RequestPipeline:
 
             if not law_data or not self._extract_law_items(law_data):
                 raise PipelineStageError("LawAPI", "empty_law_data")
+
+            related_network = self._expand_related_law_network(law_data, metrics=call_metrics)
+            if related_network:
+                follow_up_datasets: List[Dict[str, Any]] = []
+                primary_law = self._pick_primary_law(law_data) or {}
+                follow_up_queries = self._expanded_related_search_queries(
+                    related_network,
+                    user_query=req.user_query,
+                    primary_law_name=str(primary_law.get("law_name") or ""),
+                )
+                for follow_up_query in follow_up_queries:
+                    if follow_up_query in searched_queries:
+                        continue
+                    searched_queries.add(follow_up_query)
+                    self._increment_metric(call_metrics, "law_search_count")
+                    self._increment_metric(call_metrics, "nlic_calls")
+                    result = self.law_api.search_law(follow_up_query)
+                    if result and self._extract_law_items(result):
+                        follow_up_datasets.append(result)
+                if follow_up_datasets:
+                    law_data = self._merge_law_results(follow_up_datasets + [law_data])
+                law_data = self._merge_related_law_items(law_data, related_network)
 
             law_enrichment = self._build_law_enrichment(
                 req.user_query,

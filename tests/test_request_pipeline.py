@@ -144,6 +144,115 @@ class FakeLawApiLibrary(FakeLawApiOk):
         return super().search_law(query)
 
 
+class FakeLawApiSchoolYouth(FakeLawApiOk):
+    def search_law(self, query):
+        self.search_queries.append(query)
+        if query == "청소년복지 지원법 시행령":
+            return {
+                "LawSearch": {
+                    "law": [
+                        {
+                            "법령ID": "009682",
+                            "법령명한글": "청소년복지 지원법 시행령",
+                            "법령일련번호": "9682",
+                        }
+                    ]
+                }
+            }
+        if query == "청소년복지 지원법":
+            return {
+                "LawSearch": {
+                    "law": [
+                        {
+                            "법령ID": "009681",
+                            "법령명한글": "청소년복지 지원법",
+                            "법령일련번호": "9681",
+                        }
+                    ]
+                }
+            }
+        if query == "청소년 기본법 시행령":
+            return {
+                "LawSearch": {
+                    "law": [
+                        {
+                            "법령ID": "005206",
+                            "법령명한글": "청소년 기본법 시행령",
+                            "법령일련번호": "5206",
+                        }
+                    ]
+                }
+            }
+        if query == "청소년 기본법":
+            return {
+                "LawSearch": {
+                    "law": [
+                        {
+                            "법령ID": "000816",
+                            "법령명한글": "청소년 기본법",
+                            "법령일련번호": "816",
+                        }
+                    ]
+                }
+            }
+        return {
+            "LawSearch": {
+                "law": [
+                    {
+                        "법령ID": "012054",
+                        "법령명한글": "학교 밖 청소년 지원에 관한 법률",
+                        "법령일련번호": "12054",
+                    }
+                ]
+            }
+        }
+
+    def search_related_laws(self, query=None, law_id=None):
+        if law_id == "012054":
+            return {
+                "lsRltSearch": {
+                    "법령": {
+                        "관련법령": [
+                            {
+                                "관련법령ID": "000816",
+                                "관련법령명": "청소년 기본법",
+                                "관련법령본문조회": "https://www.law.go.kr/법령/청소년기본법",
+                                "법령간관계": "3유형(기본법)",
+                            }
+                        ]
+                    }
+                }
+            }
+        if law_id == "000816":
+            return {
+                "lsRltSearch": {
+                    "법령": {
+                        "관련법령": [
+                            {
+                                "관련법령ID": "009681",
+                                "관련법령명": "청소년복지 지원법",
+                                "관련법령본문조회": "https://www.law.go.kr/법령/청소년복지지원법",
+                                "법령간관계": "4유형(개별법)",
+                            }
+                        ]
+                    }
+                }
+            }
+        return {"lsRltSearch": {"법령": {"관련법령": []}}}
+
+    def find_article_by_keywords(self, law_id, keywords):
+        if law_id == "009682" and any(keyword in {"주민등록번호", "고유식별정보"} for keyword in keywords):
+            return {
+                "law_id": "009682",
+                "article_no": "제18조 제6호",
+                "article_base_no": "제18조",
+                "article_text": "제18조 제6호 법 제16조에 따른 가정 밖 청소년의 발생 예방 및 보호ㆍ지원에 관한 사무",
+                "matched_via": "service:law:keyword_scan",
+                "score": 7,
+            }
+        return None
+
+
 class RequestPipelineTests(unittest.TestCase):
     def test_refined_precedent_queries_split_broad_question_into_issue_queries(self):
         queries = RequestPipeline._precedent_search_queries_refined(
@@ -472,6 +581,51 @@ class RequestPipelineTests(unittest.TestCase):
             queries = pipeline._resolved_related_law_queries("외부 강사비 원천징수 기준이 궁금합니다")
 
             self.assertIn("소득세법", queries)
+
+    def test_process_expands_related_law_network_for_school_youth_question(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            law_api = FakeLawApiSchoolYouth()
+            pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+            result = pipeline.process(
+                PipelineRequest(
+                    user_query="학교밖청소년지원센터는 주민등록번호를 수집할 수 있나",
+                    context="기준시점: 2026-03-18",
+                )
+            )
+
+            self.assertIsNone(result.error)
+            self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "청소년복지 지원법 시행령")
+            self.assertEqual(result.citations["law_context"]["article"]["article_no"], "제18조 제6호")
+            related_laws = result.citations["law_context"]["related_laws"]
+            self.assertTrue(any(item["law_name"] == "청소년 기본법" for item in related_laws))
+            self.assertTrue(any(item["law_name"] == "청소년복지 지원법" for item in related_laws))
+
+    def test_expanded_related_search_queries_prioritize_welfare_law_for_school_youth_question(self):
+        queries = RequestPipeline._expanded_related_search_queries(
+            [
+                {"관련법령명": "아동ㆍ청소년의 성보호에 관한 법률", "법령간관계": "4유형(개별법)"},
+                {"관련법령명": "청소년복지 지원법", "법령간관계": "4유형(개별법)"},
+                {"관련법령명": "청소년 보호법", "법령간관계": "4유형(개별법)"},
+            ],
+            user_query="학교밖청소년지원센터는 주민등록번호 수집 가능 함?",
+            primary_law_name="학교 밖 청소년 지원에 관한 법률",
+        )
+
+        self.assertEqual(queries[0], "청소년복지 지원법 시행령")
+
+    def test_sensitive_identifier_keywords_focus_on_school_youth_execution_clauses(self):
+        keywords = RequestPipeline._sensitive_identifier_keywords(
+            "학교밖청소년지원센터는 주민등록번호 수집 가능 함?"
+        )
+
+        self.assertIn("학교밖청소년지원센터", keywords)
+        self.assertIn("학교 밖 청소년", keywords)
+        self.assertIn("가정 밖 청소년", keywords)
+        self.assertIn("통합정보시스템", keywords)
+        self.assertNotIn("상담", keywords)
+        self.assertNotIn("전문가 상담", keywords)
 
 if __name__ == "__main__":
     unittest.main()

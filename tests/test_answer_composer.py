@@ -335,5 +335,39 @@ class AnswerComposerTests(unittest.TestCase):
         )
 
 
+    def test_compose_includes_directly_related_clauses_block(self):
+        result = self.composer.compose(
+            AnswerCompositionInput(
+                user_query="학교밖청소년지원센터는 주민등록번호 수집 가능 함?",
+                prompt_payload=PROMPT_PAYLOAD,
+                law_enrichment={
+                    "primary_law": {"law_name": "청소년복지 지원법 시행령"},
+                    "version": {"version_fields": {"?쒗뻾?쇱옄": "20251118"}},
+                    "article": {
+                        "found": True,
+                        "law_id": "009908",
+                        "article_no": "제18조",
+                        "article_text": "제18조(민감정보 및 고유식별정보의 처리) ...",
+                        "matched_clauses": [
+                            {
+                                "article_no": "제18조 제3호의2",
+                                "article_text": "법 제12조의2에 따른 통합정보시스템의 구축ㆍ운영 등에 관한 사무",
+                            },
+                            {
+                                "article_no": "제18조 제6호",
+                                "article_text": "법 제16조에 따른 가정 밖 청소년의 발생 예방 및 보호ㆍ지원에 관한 사무",
+                            },
+                        ],
+                    },
+                },
+                risk_level="LOW",
+                fallback_answer="",
+            )
+        )
+
+        self.assertIn("[직접 관련 항목]", result)
+        self.assertIn("제18조 제3호의2", result)
+        self.assertIn("제18조 제6호", result)
+
 if __name__ == "__main__":
     unittest.main()

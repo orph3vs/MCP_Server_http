@@ -62,9 +62,11 @@ class McpServer:
             {
                 "name": "ask",
                 "description": (
-                    "Primary tool for answering Korean legal questions using 국가법령정보센터 evidence. "
-                    "Use this first for natural-language questions about laws, articles, definitions, compliance, "
-                    "or legal explanation requests. Returns an answer plus summarized citations."
+                    "Primary tool for end-user Korean legal Q&A using 국가법령정보센터 evidence. "
+                    "Use this first for natural-language legal questions, interpretation requests, compliance questions, "
+                    "or when the user wants a final answer rather than raw lookup steps. "
+                    "Prefer this over search_law/get_article/validate_article unless raw inspection is specifically needed. "
+                    "Returns a synthesized answer plus summarized citations."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -86,8 +88,9 @@ class McpServer:
             {
                 "name": "answer_with_citations",
                 "description": (
-                    "Alias of ask. Prefer this tool for end-user legal Q&A when you want a grounded answer with citations "
-                    "instead of raw law records."
+                    "Preferred final-answer tool for end-user legal Q&A. "
+                    "Use this before raw tools when the user asks a legal question in prose and wants a grounded answer with citations. "
+                    "search_law/get_article/validate_article are investigation helpers, not the default path for final answers."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -106,8 +109,9 @@ class McpServer:
             {
                 "name": "search_law",
                 "description": (
-                    "Search laws by query text via 국가법령정보센터. Use when you need raw search hits or to identify a law_id "
-                    "before calling get_article or get_version."
+                    "Investigation helper that returns raw law search hits via 국가법령정보센터. "
+                    "Use only when you need raw search results, to identify a law_id, or to inspect candidate laws before another step. "
+                    "Do not prefer this over ask/answer_with_citations for ordinary legal Q&A."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -119,8 +123,9 @@ class McpServer:
             {
                 "name": "get_article",
                 "description": (
-                    "Fetch the text of a specific article from a law. Use when law_id and article number are already known "
-                    "and raw article text is needed."
+                    "Investigation helper that fetches the raw text of a specific article. "
+                    "Use when law_id and article number are already known and you need to inspect or quote article text directly. "
+                    "Do not use this as the default final-answer path when ask/answer_with_citations can answer the question."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -134,7 +139,10 @@ class McpServer:
             },
             {
                 "name": "get_version",
-                "description": "Fetch version metadata such as 시행일자 and 공포일자 for a law.",
+                "description": (
+                    "Investigation helper that fetches version metadata such as 시행일자 and 공포일자 for a law. "
+                    "Use when version timing itself matters."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -147,7 +155,8 @@ class McpServer:
             {
                 "name": "validate_article",
                 "description": (
-                    "Check whether a given law/article pair resolves to an actual article text. Use for validation or guardrails."
+                    "Investigation helper that checks whether a law/article pair resolves to an actual article text. "
+                    "Use for validation or guardrails after a likely article has already been identified, not as the default answer tool."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -162,8 +171,9 @@ class McpServer:
             {
                 "name": "search_precedent",
                 "description": (
-                    "Search Korean precedents. Prefer this for ambiguous, high-risk, or interpretation-heavy legal questions "
-                    "when statutory text alone may not be enough."
+                    "Investigation helper for Korean precedents. "
+                    "Use when the issue is ambiguous, high-risk, interpretation-heavy, or statutory text alone may not be enough. "
+                    "For ordinary statutory Q&A, start with ask/answer_with_citations."
                 ),
                 "inputSchema": {
                     "type": "object",

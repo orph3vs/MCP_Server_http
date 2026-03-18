@@ -2,6 +2,7 @@
 
 Implemented features:
 - search_law
+- search_related_laws
 - get_article
 - get_version
 - validate_article
@@ -16,7 +17,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -173,6 +174,24 @@ class NlicApiWrapper:
             raise ValueError("query must not be empty")
         return self._call("law", {"query": query.strip()})
 
+    def search_related_laws(
+        self,
+        *,
+        query: Optional[str] = None,
+        law_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_query = (query or "").strip()
+        normalized_law_id = (law_id or "").strip()
+        if not normalized_query and not normalized_law_id:
+            raise ValueError("query or law_id is required")
+
+        params: Dict[str, Any] = {}
+        if normalized_law_id:
+            params["ID"] = normalized_law_id
+        else:
+            params["query"] = normalized_query
+        return self._call("lsRlt", params)
+
     def search_precedent(self, query: str, reference_law: Optional[str] = None) -> Dict[str, Any]:
         if not query.strip():
             raise ValueError("query must not be empty")
@@ -296,6 +315,209 @@ class NlicApiWrapper:
             "matched_via": matched_via,
             "attempted_queries": attempted_queries,
             "source": source,
+        }
+
+    @staticmethod
+    def _article_no_from_unit(unit: Dict[str, Any]) -> Optional[str]:
+        article_no = str(unit.get("조문번호") or "").strip()
+        branch_no = str(unit.get("조문가지번호") or "").strip()
+        if not article_no:
+            content = str(unit.get("조문내용") or "")
+            match = re.match(r"제\s*(\d+)\s*조(?:의\s*(\d+))?", content)
+            if not match:
+                return None
+            article_no = match.group(1)
+            branch_no = match.group(2) or ""
+        if branch_no:
+            return f"제{int(article_no)}조의{int(branch_no)}"
+        return f"제{int(article_no)}조"
+
+    @staticmethod
+    def _unit_search_text(unit: Dict[str, Any]) -> str:
+        parts: List[str] = []
+        for key in ("조문제목", "조문내용"):
+            value = unit.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, dict):
+                for value in node.values():
+                    _walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+            elif isinstance(node, str) and node.strip():
+                parts.append(node.strip())
+
+        for key in ("항", "호", "목"):
+            _walk(unit.get(key))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _unit_heading_text(unit: Dict[str, Any]) -> str:
+        parts: List[str] = []
+        for key in ("조문제목", "조문내용", "항내용", "호내용", "목내용"):
+            value = unit.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+        return "\n".join(parts)
+
+    @staticmethod
+    def _match_score(text: str, keywords: List[str]) -> int:
+        score = sum(2 if keyword in text else 0 for keyword in keywords)
+        if "처리할 수" in text:
+            score += 2
+        if "불가피" in text:
+            score += 1
+        return score
+
+    @staticmethod
+    def _join_pinpoint(*parts: Optional[str]) -> str:
+        return " ".join(part.strip() for part in parts if isinstance(part, str) and part.strip())
+
+    @staticmethod
+    def _as_list(node: Any) -> List[Any]:
+        if isinstance(node, list):
+            return node
+        if isinstance(node, dict):
+            return [node]
+        return []
+
+    @staticmethod
+    def _item_label(number_key: str, branch_key: str, suffix: str, node: Dict[str, Any]) -> str:
+        number = str(node.get(number_key) or "").strip()
+        branch = str(node.get(branch_key) or "").strip()
+        base_number = number.rstrip(".")
+        if not base_number:
+            return ""
+        if not branch:
+            return f"제{base_number}{suffix}"
+        return f"제{base_number}{suffix}의{branch}"
+
+    def _best_match_in_unit(self, unit: Dict[str, Any], keywords: List[str]) -> Optional[Dict[str, Any]]:
+        article_no = self._article_no_from_unit(unit)
+        if not article_no:
+            return None
+
+        best_match: Optional[Dict[str, Any]] = None
+        child_matches: List[Dict[str, Any]] = []
+
+        def _maybe_update(text: str, pinpoint: str, *, depth_bonus: int = 0, prefer_child: bool = False) -> None:
+            nonlocal best_match
+            score = self._match_score(text, keywords)
+            if score <= 0:
+                return
+            candidate = {
+                "article_no": pinpoint,
+                "article_base_no": article_no,
+                "article_text": text,
+                "score": score + depth_bonus,
+            }
+            if best_match is None or candidate["score"] > best_match["score"]:
+                best_match = candidate
+            if prefer_child:
+                child_matches.append(candidate)
+
+        base_text = self._unit_heading_text(unit)
+        if base_text:
+            _maybe_update(base_text, article_no)
+
+        paragraphs = self._as_list(unit.get("항"))
+        if paragraphs:
+            for paragraph in paragraphs:
+                if not isinstance(paragraph, dict):
+                    continue
+                paragraph_no = str(paragraph.get("항번호") or "").strip()
+                paragraph_text = self._unit_heading_text(paragraph)
+                if paragraph_text and paragraph_no:
+                    _maybe_update(
+                        paragraph_text,
+                        self._join_pinpoint(article_no, paragraph_no),
+                        depth_bonus=1,
+                        prefer_child=True,
+                    )
+
+                items = self._as_list(paragraph.get("호"))
+                if items:
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        item_no = self._item_label("호번호", "호가지번호", "호", item)
+                        item_text = self._unit_heading_text(item)
+                        if item_text:
+                            _maybe_update(
+                                item_text,
+                                self._join_pinpoint(article_no, paragraph_no, item_no),
+                                depth_bonus=3,
+                                prefer_child=True,
+                            )
+
+                        subitems = self._as_list(item.get("목"))
+                        if subitems:
+                            for subitem in subitems:
+                                if not isinstance(subitem, dict):
+                                    continue
+                                subitem_no = self._item_label("목번호", "목가지번호", "목", subitem)
+                                subitem_text = self._unit_heading_text(subitem)
+                                if subitem_text:
+                                    _maybe_update(
+                                        subitem_text,
+                                        self._join_pinpoint(article_no, paragraph_no, item_no, subitem_no),
+                                        depth_bonus=4,
+                                        prefer_child=True,
+                                    )
+
+        if child_matches and base_text:
+            ordered_children: List[Dict[str, Any]] = []
+            seen_child_labels = set()
+            for child in sorted(child_matches, key=lambda item: (-item["score"], item["article_no"])):
+                label = child["article_no"]
+                if label in seen_child_labels:
+                    continue
+                seen_child_labels.add(label)
+                ordered_children.append(child)
+            return {
+                "article_no": article_no,
+                "article_base_no": article_no,
+                "article_text": base_text,
+                "matched_clauses": ordered_children[:3],
+                "score": (ordered_children[0]["score"] if ordered_children else 0) + max(self._match_score(base_text, keywords), 1),
+            }
+
+        return best_match
+
+    def find_article_by_keywords(self, law_id: str, keywords: List[str]) -> Optional[Dict[str, Any]]:
+        normalized_law_id = law_id.strip()
+        normalized_keywords = [keyword.strip() for keyword in keywords if keyword and keyword.strip()]
+        if not normalized_law_id or not normalized_keywords:
+            return None
+
+        source = self._call("law", {"ID": normalized_law_id}, endpoint="service")
+        law = source.get("법령") if isinstance(source, dict) else None
+        jo = law.get("조문") if isinstance(law, dict) else None
+        units = jo.get("조문단위") if isinstance(jo, dict) else None
+        if not isinstance(units, list):
+            return None
+
+        best_match: Optional[Dict[str, Any]] = None
+        for unit in units:
+            if not isinstance(unit, dict) or unit.get("조문여부") != "조문":
+                continue
+            candidate = self._best_match_in_unit(unit, normalized_keywords)
+            if candidate and (best_match is None or candidate["score"] > best_match["score"]):
+                best_match = candidate
+
+        if not best_match:
+            return None
+        return {
+            "law_id": normalized_law_id,
+            "article_no": best_match["article_no"],
+            "article_base_no": best_match["article_base_no"],
+            "article_text": best_match["article_text"],
+            "matched_clauses": best_match.get("matched_clauses", []),
+            "matched_via": "service:law:keyword_scan",
+            "score": best_match["score"],
         }
 
     def get_version(self, law_id: str) -> Dict[str, Any]:
