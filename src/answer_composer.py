@@ -387,12 +387,18 @@ class AnswerComposer:
         version_fields: Dict[str, Any],
         used_search_query: Optional[str],
         related_articles: List[Dict[str, Any]],
+        law_link: Optional[str] = None,
+        article_link: Optional[str] = None,
     ) -> str:
         lines = ["[근거]"]
         if law_name:
             lines.append(f"- 법령: {law_name}")
         if article_no:
             lines.append(f"- 조문: {article_no}")
+        if law_link:
+            lines.append(f"- 법령 링크: {law_link}")
+        if article_link:
+            lines.append(f"- 조문 링크: {article_link}")
         if version_fields.get("시행일자"):
             lines.append(f"- 시행일자: {version_fields['시행일자']}")
         if used_search_query:
@@ -414,8 +420,10 @@ class AnswerComposer:
         review_summary = law_enrichment.get("review_summary") or {}
 
         law_name = self._clean_text(str(primary_law.get("law_name", "")))
+        law_link = self._clean_text(str(primary_law.get("law_link", ""))) or None
         article_text = self._clean_text(str(article.get("article_text", "")))
         article_no = self._clean_text(str(article.get("article_no", "")))
+        article_link = self._clean_text(str(article.get("article_link", ""))) or None
         article_title = self._extract_article_title(article_text) if article_text else None
         intent = self._question_intent(composition_input.user_query)
 
@@ -468,7 +476,20 @@ class AnswerComposer:
                 lines.extend(["", tail_guidance])
 
             if prompt_rules.require_evidence_mapping or prompt_rules.grounded_only:
-                lines.extend(["", self._evidence_block(law_name, article_no, version_fields, used_search_query, related_articles)])
+                lines.extend(
+                    [
+                        "",
+                        self._evidence_block(
+                            law_name,
+                            article_no,
+                            version_fields,
+                            used_search_query,
+                            related_articles,
+                            law_link=law_link,
+                            article_link=article_link,
+                        ),
+                    ]
+                )
             return "\n".join(lines).strip()
 
         if law_name:
@@ -501,7 +522,19 @@ class AnswerComposer:
                 lines.append(tail_guidance)
 
             if prompt_rules.require_evidence_mapping or prompt_rules.grounded_only:
-                lines.extend(["", self._evidence_block(law_name, "", version_fields, used_search_query, related_articles)])
+                lines.extend(
+                    [
+                        "",
+                        self._evidence_block(
+                            law_name,
+                            "",
+                            version_fields,
+                            used_search_query,
+                            related_articles,
+                            law_link=law_link,
+                        ),
+                    ]
+                )
             return "\n".join(lines).strip()
 
         if composition_input.prompt_payload.get("system") and composition_input.fallback_answer.strip():

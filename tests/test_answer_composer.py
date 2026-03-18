@@ -304,5 +304,36 @@ class AnswerComposerTests(unittest.TestCase):
         self.assertIn("단정적으로 답하기 어렵습니다", result)
 
 
+    def test_compose_includes_law_and_article_links_in_evidence_block(self):
+        result = self.composer.compose(
+            AnswerCompositionInput(
+                user_query="개인정보 보호법 제1조 설명",
+                prompt_payload=PROMPT_PAYLOAD,
+                law_enrichment={
+                    "primary_law": {
+                        "law_name": "개인정보 보호법",
+                        "law_link": "https://www.law.go.kr/DRF/lawService.do?target=law&ID=011357&type=HTML",
+                    },
+                    "version": {"version_fields": {"시행일자": "20251002"}},
+                    "article": {
+                        "found": True,
+                        "law_id": "011357",
+                        "article_no": "제1조",
+                        "article_link": "https://www.law.go.kr/DRF/lawService.do?target=law&ID=011357&JO=000100&type=HTML",
+                        "article_text": "제1조(목적) 테스트 조문 본문",
+                    },
+                },
+                risk_level="LOW",
+                fallback_answer="",
+            )
+        )
+
+        self.assertIn("- 법령 링크: https://www.law.go.kr/DRF/lawService.do?target=law&ID=011357&type=HTML", result)
+        self.assertIn(
+            "- 조문 링크: https://www.law.go.kr/DRF/lawService.do?target=law&ID=011357&JO=000100&type=HTML",
+            result,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

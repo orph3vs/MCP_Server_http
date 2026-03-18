@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from src.answer_composer import AnswerComposer, AnswerCompositionInput
 from src.confidence_scoring import ConfidenceInput, ConfidenceScoringEngine
@@ -214,6 +215,35 @@ class RequestPipeline:
                 return [nested_items]
 
         return []
+
+    @staticmethod
+    def _absolute_link(raw_link: Optional[str]) -> Optional[str]:
+        if not raw_link:
+            return None
+        raw_link = str(raw_link).strip()
+        if not raw_link:
+            return None
+        if raw_link.startswith("http://") or raw_link.startswith("https://"):
+            return raw_link
+        if raw_link.startswith("/"):
+            return f"https://www.law.go.kr{raw_link}"
+        return None
+
+    def _service_link(self, law_id: Optional[str], article_no: Optional[str] = None) -> Optional[str]:
+        normalized_law_id = self._clean_text(str(law_id or ""))
+        if not normalized_law_id:
+            return None
+
+        service_url = getattr(self.law_api, "service_url", NlicApiWrapper.DEFAULT_SERVICE_URL)
+        oc = self._clean_text(str(getattr(self.law_api, "oc", "")))
+        params: Dict[str, str] = {"target": "law", "ID": normalized_law_id, "type": "HTML"}
+        if oc:
+            params["OC"] = oc
+        if article_no:
+            article_candidates = NlicApiWrapper._article_no_candidates(article_no)
+            if article_candidates:
+                params["JO"] = article_candidates[0]
+        return f"{service_url}?{urlencode(params)}"
 
     @staticmethod
     def _pick_primary_law(law_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -679,18 +709,19 @@ class RequestPipeline:
 
         return lines
 
-    @staticmethod
-    def _summarize_search_results(law_data: Dict[str, Any], used_search_query: Optional[str]) -> Dict[str, Any]:
+    def _summarize_search_results(self, law_data: Dict[str, Any], used_search_query: Optional[str]) -> Dict[str, Any]:
         items = RequestPipeline._extract_law_items(law_data)
         results = []
         for item in items[:5]:
+            law_id = item.get("법령ID") or item.get("id")
             results.append(
                 {
-                    "law_id": item.get("법령ID") or item.get("id"),
+                    "law_id": law_id,
                     "law_name": item.get("법령명한글") or item.get("법령명_한글"),
                     "law_type": item.get("법령구분명"),
                     "effective_date": item.get("시행일자"),
                     "promulgation_date": item.get("공포일자"),
+                    "law_link": self._absolute_link(item.get("법령상세링크")) or self._service_link(law_id),
                 }
             )
         return {
@@ -699,8 +730,7 @@ class RequestPipeline:
             "results": results,
         }
 
-    @staticmethod
-    def _summarize_article(article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _summarize_article(self, article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(article, dict) or not article.get("found"):
             return None
         return {
@@ -708,17 +738,17 @@ class RequestPipeline:
             "found": True,
             "matched_via": article.get("matched_via"),
             "article_text_excerpt": RequestPipeline._truncate_text(str(article.get("article_text", "")), 180),
+            "article_link": self._service_link(article.get("law_id"), article.get("article_no")),
         }
 
-    @classmethod
-    def _summarize_law_enrichment(cls, enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_law_enrichment(self, enrichment: Dict[str, Any]) -> Dict[str, Any]:
         primary_law = enrichment.get("primary_law") or {}
         version = enrichment.get("version") or {}
         version_fields = version.get("version_fields") or {}
-        article_summary = cls._summarize_article(enrichment.get("article") or {})
+        article_summary = self._summarize_article(enrichment.get("article") or {})
         related_summaries = [
             summary
-            for summary in (cls._summarize_article(article) for article in enrichment.get("related_articles") or [])
+            for summary in (self._summarize_article(article) for article in enrichment.get("related_articles") or [])
             if summary
         ]
         primary_precedent = enrichment.get("primary_precedent") or {}
@@ -741,6 +771,8 @@ class RequestPipeline:
             "primary_law": {
                 "law_id": primary_law.get("law_id"),
                 "law_name": primary_law.get("law_name"),
+                "law_link": self._absolute_link((primary_law.get("raw") or {}).get("법령상세링크"))
+                or self._service_link(primary_law.get("law_id")),
             }
             if primary_law
             else None,

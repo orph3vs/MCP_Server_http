@@ -473,6 +473,5 @@ class RequestPipelineTests(unittest.TestCase):
 
             self.assertIn("소득세법", queries)
 
-
 if __name__ == "__main__":
     unittest.main()
