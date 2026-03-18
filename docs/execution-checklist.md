@@ -125,3 +125,19 @@ curl -X POST http://localhost:8001/mcp \
 - Current behavior is to keep trying the next article candidate instead of failing the whole `get_article` call immediately.
 - Because of this, recent legal questions may complete with fewer follow-up raw tool calls and more `ask`-only completions.
 - If a just-fixed behavior still looks old, restart the running server before debugging further.
+
+## 9) stdio MCP Execution
+- Local MCP clients can connect over stdio using the same core server logic.
+- Launch with:
+
+```bash
+python -m src.mcp_stdio_server
+```
+
+- Windows helper script:
+
+```bat
+C:\MCP_Server\MyMcpServer-http\run_mcp_stdio_server.cmd
+```
+
+- `stdio` and HTTP share the same retrieval/answer core. Use `stdio` for local integration and HTTP for remote access.

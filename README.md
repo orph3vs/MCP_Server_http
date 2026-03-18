@@ -30,9 +30,11 @@
 
 ## Runtime Notes
 - `src.http_server`는 `127.0.0.1:8000`에서 REST/로그 확인용으로 사용합니다.
+- `src.mcp_stdio_server`는 로컬 MCP 클라이언트의 stdio 연결용으로 사용할 수 있습니다.
 - `src.mcp_http_server`는 `8001` 포트에서 MCP 연결용으로 사용합니다.
 - 외부 공개가 필요할 때는 `ngrok`를 `8001`에만 연결하면 됩니다.
 - 질문 처리 로그는 SQLite `data/cost_logs.db`에 저장되고, `8000`의 `/logs/recent`는 그 DB를 조회하는 화면입니다.
+- stdio와 HTTP는 같은 코어(`RequestPipeline`, `McpServer`)를 공유하므로 필요하면 둘 다 병행해서 사용할 수 있습니다.
 
 - 보안 주의: NLIC OC 값은 공개 문서에 기재하지 마세요.
 

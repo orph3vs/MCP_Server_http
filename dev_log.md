@@ -70,9 +70,14 @@
 - MCP HTTP server restart:
   - `python -m src.mcp_http_server`
   - `run_mcp_http_server.cmd`
+- MCP stdio server restart:
+  - `python -m src.mcp_stdio_server`
+  - `run_mcp_stdio_server.cmd`
 - Runtime split:
+  - `stdio`: local MCP client integration
   - `8000`: REST/log inspection (localhost only)
   - `8001`: MCP transport
+- `stdio` and HTTP transports share the same retrieval/answer core (`RequestPipeline`, `McpServer`).
 - If behavior seems old after code edits, restart the running server process before debugging further.
 
 ## Recent Retrieval Tuning
