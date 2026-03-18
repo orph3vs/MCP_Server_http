@@ -24,8 +24,15 @@
 - `src/cost_logger.py`: 요청 비용 로그(SQLite) 저장 모듈
 - `src/request_pipeline.py`: 전체 요청 흐름(User→...→Response) 오케스트레이션 파이프라인
 - `src/http_server.py`: RequestPipeline HTTP 엔드포인트(`/health`, `/ask`)
-- `src/mcp_stdio_server.py`: stdio 기반 MCP 서버(`initialize`, `tools/list`, `tools/call`)
+- `src/mcp_stdio_server.py`: MCP JSON-RPC core (`initialize`, `tools/list`, `tools/call`)
+- `src/mcp_http_server.py`: HTTP transport MCP 서버(`POST /mcp`, `GET /health`)
 - `run_local.py`: 로컬 단건 실행 스크립트
+
+## Runtime Notes
+- `src.http_server`는 `8000` 포트에서 REST/로그 확인용으로 사용합니다.
+- `src.mcp_http_server`는 `8001` 포트에서 MCP 연결용으로 사용합니다.
+- 외부 공개가 필요할 때는 `ngrok`를 `8001`에만 연결하면 됩니다.
+- 질문 처리 로그는 SQLite `data/cost_logs.db`에 저장되고, `8000`의 `/logs/recent`는 그 DB를 조회하는 화면입니다.
 
 - 보안 주의: NLIC OC 값은 공개 문서에 기재하지 마세요.
 

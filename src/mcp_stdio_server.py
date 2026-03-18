@@ -20,7 +20,7 @@ SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-11-25",
 )
-LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "mcp_stdio_server.log"
+LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "mcp_server.log"
 
 
 def _log(message: str) -> None:

@@ -81,3 +81,41 @@ curl -X POST http://localhost:8000/tools/get_article `
   -H "Content-Type: application/json" `
   -d '{"law_id":"011357","article_no":"제1조"}'
 ```
+
+## 6) MCP HTTP 서버 확인
+터미널 A:
+```bash
+python -m src.mcp_http_server
+```
+
+터미널 B:
+```bash
+curl http://localhost:8001/health
+```
+
+정상 기준:
+- `{"status": "ok", "transport": "http", "protocol": "json-rpc-2.0"}` 응답
+
+MCP initialize 요청:
+```bash
+curl -X POST http://localhost:8001/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
+```
+
+정상 기준:
+- JSON-RPC `result.protocolVersion` 필드 존재
+
+MCP tools/list 요청:
+```bash
+curl -X POST http://localhost:8001/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+```
+
+## 7) 역할 구분 메모
+- `8000`: `src.http_server`용. `/ask`, `/tools/*`, `/logs/recent` 확인용
+- `8001`: `src.mcp_http_server`용. MCP 클라이언트/`ngrok` 연결용
+- `ngrok`를 쓸 때는 `ngrok http 8001`만 실행하면 됩니다.
+- `8000`을 끄고 질문을 보내도 로그는 `data/cost_logs.db`에 쌓여야 하며, 나중에 `8000`을 다시 켜서 `/logs/recent`로 조회할 수 있습니다.
+- `ask` 호출 후에는 request 로그를, `search_law`/`validate_article` 호출 후에는 tool 로그를 확인하면 됩니다.

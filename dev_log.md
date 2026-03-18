@@ -6,7 +6,7 @@
 
 ## Current Stable Scope
 - HTTP server for `/ask`, law tools, precedent tools, logs, and hint suggestions.
-- MCP stdio server exposing:
+- MCP server over HTTP transport exposing:
   - `ask`
   - `answer_with_citations`
   - `search_law`
@@ -67,8 +67,12 @@
 ## Recovery / Restart Notes
 - HTTP server restart:
   - `python -m src.http_server`
-- MCP stdio restart:
-  - `run_mcp_stdio_server.cmd`
+- MCP HTTP server restart:
+  - `python -m src.mcp_http_server`
+  - `run_mcp_http_server.cmd`
+- Runtime split:
+  - `8000`: REST/log inspection
+  - `8001`: MCP transport
 - If behavior seems old after code edits, restart the running server process before debugging further.
 
 ## Recommended Next Work
