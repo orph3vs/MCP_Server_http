@@ -130,6 +130,11 @@ curl -X POST http://localhost:8001/mcp \
 - Current behavior is to keep trying the next article candidate instead of failing the whole `get_article` call immediately.
 - Because of this, recent legal questions may complete with fewer follow-up raw tool calls and more `ask`-only completions.
 - If a just-fixed behavior still looks old, restart the running server before debugging further.
+- User-facing law/article links should be checked in newly generated answers after restart.
+- Current public link policy:
+  - prefer `https://www.law.go.kr/법령/...`
+  - do not expose `OC` in answer links
+  - do not rely on `DRF` URLs for user-facing evidence output
 
 ## 9) stdio MCP Execution
 - Local MCP clients can connect over stdio using the same core server logic.

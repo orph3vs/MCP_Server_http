@@ -1,4 +1,4 @@
-"""Grounded answer composition for legal Q&A responses."""
+﻿"""Grounded answer composition for legal Q&A responses."""
 
 from __future__ import annotations
 
@@ -586,7 +586,6 @@ class AnswerComposer:
                 lines.extend(
                     [
                         "",
-                        "[근거]",
                         self._evidence_block(
                             law_name,
                             article_no,

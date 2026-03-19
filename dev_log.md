@@ -110,3 +110,14 @@
 - Expand related-law hints only when repeated misses appear.
 - Improve weak-grounding detection later if needed.
 - Keep the retrieval path cost-controlled unless real usage proves the need for LLM fallback.
+
+## Link Policy Update
+- User-facing evidence links should no longer expose NLIC `OC` values.
+- Public answer links now prefer open browser routes under `https://www.law.go.kr/법령/...` instead of DRF query URLs.
+- Link shape was simplified again:
+  - whole law: `/법령/<법령명>`
+  - article: `/법령/<법령명>/<조문>`
+- The date/promulgation tuple segment was removed from generated public links because it increased the chance of broken pages in practice.
+- Evidence output now separates:
+  - clause/article-level links
+  - whole-law link
