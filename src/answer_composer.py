@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,32 @@ class AnswerComposer:
     @staticmethod
     def _clean_text(text: str) -> str:
         return re.sub(r"\s+", " ", text or "").strip()
+
+    @staticmethod
+    def _sanitize_link_for_display(link: Optional[str]) -> Optional[str]:
+        normalized = AnswerComposer._clean_text(str(link or ""))
+        if not normalized:
+            return None
+        parsed = urlsplit(normalized)
+        sanitized_query = urlencode(
+            [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.upper() != "OC"
+            ]
+        )
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, sanitized_query, parsed.fragment))
+
+    @classmethod
+    def _append_article_to_public_law_link(cls, law_link: Optional[str], article_no: Optional[str]) -> Optional[str]:
+        normalized_link = cls._sanitize_link_for_display(law_link)
+        normalized_article_no = re.sub(r"\s+", "", cls._clean_text(str(article_no or "")))
+        if not normalized_link or not normalized_article_no or "/법령/" not in normalized_link:
+            return None
+        suffix = "/" + quote(normalized_article_no, safe="")
+        if normalized_link.rstrip("/").endswith(suffix):
+            return normalized_link
+        return normalized_link.rstrip("/") + suffix
 
     @staticmethod
     def _extract_article_title(article_text: str) -> Optional[str]:
@@ -392,7 +419,11 @@ class AnswerComposer:
         lines = ["[직접 관련 항목]"]
         for clause in valid_clauses[:3]:
             excerpt = cls._truncate_text(str(clause.get("article_text", "")), 120)
-            lines.append(f"- {clause['article_no']}: {excerpt}")
+            clause_link = cls._sanitize_link_for_display(clause.get("article_link"))
+            if clause_link:
+                lines.append(f"- {clause['article_no']}: {excerpt} ({clause_link})")
+            else:
+                lines.append(f"- {clause['article_no']}: {excerpt}")
         return "\n".join(lines)
 
     @classmethod
@@ -417,18 +448,44 @@ class AnswerComposer:
         version_fields: Dict[str, Any],
         used_search_query: Optional[str],
         related_articles: List[Dict[str, Any]],
+        matched_clauses: List[Dict[str, Any]],
         law_link: Optional[str] = None,
         article_link: Optional[str] = None,
     ) -> str:
         lines = ["[근거]"]
+        sanitized_law_link = cls._sanitize_link_for_display(law_link)
+        sanitized_article_link = cls._sanitize_link_for_display(article_link)
         if law_name:
             lines.append(f"- 법령: {law_name}")
         if article_no:
             lines.append(f"- 조문: {article_no}")
-        if law_link:
-            lines.append(f"- 법령 링크: {law_link}")
-        if article_link:
-            lines.append(f"- 조문 링크: {article_link}")
+            lines.append("[근거 조문]")
+            if sanitized_article_link:
+                lines.append(f"- {article_no}: {sanitized_article_link}")
+                lines.append(f"- 조문 링크: {sanitized_article_link}")
+            else:
+                lines.append(f"- {article_no}")
+            for clause in matched_clauses[:3]:
+                if not isinstance(clause, dict):
+                    continue
+                clause_no = cls._clean_text(str(clause.get("article_no", "")))
+                if not clause_no:
+                    continue
+                clause_link = cls._sanitize_link_for_display(clause.get("article_link")) or cls._append_article_to_public_law_link(
+                    sanitized_law_link,
+                    clause_no,
+                )
+                if clause_link:
+                    lines.append(f"- {clause_no}: {clause_link}")
+                else:
+                    lines.append(f"- {clause_no}")
+        if law_name:
+            lines.append("[근거 법령]")
+            if sanitized_law_link:
+                lines.append(f"- {law_name}: {sanitized_law_link}")
+                lines.append(f"- 법령 링크: {sanitized_law_link}")
+            else:
+                lines.append(f"- {law_name}")
         if version_fields.get("시행일자"):
             lines.append(f"- 시행일자: {version_fields['시행일자']}")
         if used_search_query:
@@ -450,10 +507,10 @@ class AnswerComposer:
         review_summary = law_enrichment.get("review_summary") or {}
 
         law_name = self._clean_text(str(primary_law.get("law_name", "")))
-        law_link = self._clean_text(str(primary_law.get("law_link", ""))) or None
+        law_link = self._sanitize_link_for_display(primary_law.get("law_link"))
         article_text = self._clean_text(str(article.get("article_text", "")))
         article_no = self._clean_text(str(article.get("article_no", "")))
-        article_link = self._clean_text(str(article.get("article_link", ""))) or None
+        article_link = self._sanitize_link_for_display(article.get("article_link"))
         matched_clauses = article.get("matched_clauses") or []
         article_title = self._extract_article_title(article_text) if article_text else None
         intent = self._question_intent(composition_input.user_query)
@@ -536,6 +593,7 @@ class AnswerComposer:
                             version_fields,
                             used_search_query,
                             related_articles,
+                            matched_clauses,
                             law_link=law_link,
                             article_link=article_link,
                         ),
@@ -582,6 +640,7 @@ class AnswerComposer:
                             version_fields,
                             used_search_query,
                             related_articles,
+                            [],
                             law_link=law_link,
                         ),
                     ]

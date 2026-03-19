@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from src.answer_composer import AnswerComposer, AnswerCompositionInput
 from src.confidence_scoring import ConfidenceInput, ConfidenceScoringEngine
@@ -240,10 +240,40 @@ class RequestPipeline:
         if not raw_link:
             return None
         if raw_link.startswith("http://") or raw_link.startswith("https://"):
-            return raw_link
+            return RequestPipeline._sanitize_link(raw_link)
         if raw_link.startswith("/"):
-            return f"https://www.law.go.kr{raw_link}"
+            return RequestPipeline._sanitize_link(f"https://www.law.go.kr{raw_link}")
         return None
+
+    @staticmethod
+    def _sanitize_link(raw_link: str) -> str:
+        parsed = urlsplit(raw_link)
+        sanitized_query = urlencode(
+            [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.upper() != "OC"
+            ]
+        )
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, sanitized_query, parsed.fragment))
+
+    @staticmethod
+    def _public_law_link(
+        law_name: Optional[str],
+        effective_date: Optional[str],
+        promulgation_no: Optional[str],
+        article_no: Optional[str] = None,
+    ) -> Optional[str]:
+        normalized_law_name = re.sub(r"\s+", "", RequestPipeline._clean_text(str(law_name or "")))
+        if not normalized_law_name:
+            return None
+
+        path_parts = [quote(normalized_law_name, safe="")]
+        normalized_article_no = re.sub(r"\s+", "", RequestPipeline._clean_text(str(article_no or "")))
+        if normalized_article_no:
+            path_parts.append(quote(normalized_article_no, safe=""))
+
+        return f"https://www.law.go.kr/법령/{'/'.join(path_parts)}"
 
     def _service_link(self, law_id: Optional[str], article_no: Optional[str] = None) -> Optional[str]:
         normalized_law_id = self._clean_text(str(law_id or ""))
@@ -251,15 +281,41 @@ class RequestPipeline:
             return None
 
         service_url = getattr(self.law_api, "service_url", NlicApiWrapper.DEFAULT_SERVICE_URL)
-        oc = self._clean_text(str(getattr(self.law_api, "oc", "")))
         params: Dict[str, str] = {"target": "law", "ID": normalized_law_id, "type": "HTML"}
-        if oc:
-            params["OC"] = oc
         if article_no:
-            article_candidates = NlicApiWrapper._article_no_candidates(article_no)
-            if article_candidates:
-                params["JO"] = article_candidates[0]
-        return f"{service_url}?{urlencode(params)}"
+            jo_value = self._article_link_jo(article_no)
+            if jo_value:
+                params["JO"] = jo_value
+        return self._sanitize_link(f"{service_url}?{urlencode(params)}")
+
+    @staticmethod
+    def _article_link_jo(article_no: str) -> Optional[str]:
+        article_candidates = NlicApiWrapper._article_no_candidates(article_no)
+        for candidate in article_candidates:
+            if str(candidate).isdigit():
+                return str(candidate)
+
+        normalized = RequestPipeline._clean_text(str(article_no))
+        match = re.search(r"(\d+)\s*조(?:\s*의\s*(\d+))?", normalized)
+        if not match:
+            return None
+
+        main_no = int(match.group(1))
+        sub_no = match.group(2)
+        if sub_no is not None:
+            return f"{main_no:04d}{int(sub_no):02d}"
+        return f"{main_no:04d}00"
+
+    @staticmethod
+    def _item_public_law_link(item: Dict[str, Any], article_no: Optional[str] = None) -> Optional[str]:
+        if not isinstance(item, dict):
+            return None
+        return RequestPipeline._public_law_link(
+            item.get("법령명한글") or item.get("법령명한자") or item.get("law_name"),
+            item.get("시행일자") or item.get("effective_date"),
+            item.get("공포번호") or item.get("promulgation_no"),
+            article_no=article_no,
+        )
 
     @staticmethod
     def _pick_primary_law(law_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -873,6 +929,9 @@ class RequestPipeline:
                 enrichment["version_error"] = str(exc)
 
         if keyword_matched_article:
+            version_fields = (enrichment.get("version") or {}).get("version_fields") or {}
+            effective_date = version_fields.get("시행일자")
+            promulgation_no = (primary_law.get("raw") or {}).get("공포번호")
             enrichment["article"] = {
                 "law_id": keyword_matched_article.get("law_id"),
                 "article_no": keyword_matched_article.get("article_no"),
@@ -880,7 +939,19 @@ class RequestPipeline:
                 "found": True,
                 "matched_via": keyword_matched_article.get("matched_via"),
                 "article_text": keyword_matched_article.get("article_text"),
-                "matched_clauses": keyword_matched_article.get("matched_clauses", []),
+                "matched_clauses": [
+                    {
+                        **clause,
+                        "article_link": self._public_law_link(
+                            primary_law.get("law_name"),
+                            effective_date,
+                            promulgation_no,
+                            clause.get("article_no"),
+                        ),
+                    }
+                    for clause in keyword_matched_article.get("matched_clauses", [])
+                    if isinstance(clause, dict)
+                ],
             }
         elif article_numbers:
             try:
@@ -1030,7 +1101,7 @@ class RequestPipeline:
                     "law_type": item.get("법령구분명"),
                     "effective_date": item.get("시행일자"),
                     "promulgation_date": item.get("공포일자"),
-                    "law_link": self._absolute_link(item.get("법령상세링크")) or self._service_link(law_id),
+                    "law_link": self._item_public_law_link(item),
                 }
             )
         return {
@@ -1039,7 +1110,14 @@ class RequestPipeline:
             "results": results,
         }
 
-    def _summarize_article(self, article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _summarize_article(
+        self,
+        article: Dict[str, Any],
+        *,
+        law_name: Optional[str] = None,
+        effective_date: Optional[str] = None,
+        promulgation_no: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         if not isinstance(article, dict) or not article.get("found"):
             return None
         return {
@@ -1047,14 +1125,22 @@ class RequestPipeline:
             "found": True,
             "matched_via": article.get("matched_via"),
             "article_text_excerpt": RequestPipeline._truncate_text(str(article.get("article_text", "")), 180),
-            "article_link": self._service_link(
-                article.get("law_id"),
+            "article_link": self._public_law_link(
+                law_name,
+                effective_date,
+                promulgation_no,
                 article.get("article_base_no") or article.get("article_no"),
             ),
             "matched_clauses": [
                 {
                     "article_no": clause.get("article_no"),
                     "article_text_excerpt": RequestPipeline._truncate_text(str(clause.get("article_text", "")), 120),
+                    "article_link": self._public_law_link(
+                        law_name,
+                        effective_date,
+                        promulgation_no,
+                        clause.get("article_no"),
+                    ),
                 }
                 for clause in (article.get("matched_clauses") or [])
                 if isinstance(clause, dict) and clause.get("article_no")
@@ -1065,10 +1151,26 @@ class RequestPipeline:
         primary_law = enrichment.get("primary_law") or {}
         version = enrichment.get("version") or {}
         version_fields = version.get("version_fields") or {}
-        article_summary = self._summarize_article(enrichment.get("article") or {})
+        primary_law_name = primary_law.get("law_name")
+        primary_effective_date = version_fields.get("시행일자")
+        primary_promulgation_no = (primary_law.get("raw") or {}).get("공포번호")
+        article_summary = self._summarize_article(
+            enrichment.get("article") or {},
+            law_name=primary_law_name,
+            effective_date=primary_effective_date,
+            promulgation_no=primary_promulgation_no,
+        )
         related_summaries = [
             summary
-            for summary in (self._summarize_article(article) for article in enrichment.get("related_articles") or [])
+            for summary in (
+                self._summarize_article(
+                    article,
+                    law_name=primary_law_name,
+                    effective_date=primary_effective_date,
+                    promulgation_no=primary_promulgation_no,
+                )
+                for article in enrichment.get("related_articles") or []
+            )
             if summary
         ]
         primary_precedent = enrichment.get("primary_precedent") or {}
@@ -1091,8 +1193,11 @@ class RequestPipeline:
             "primary_law": {
                 "law_id": primary_law.get("law_id"),
                 "law_name": primary_law.get("law_name"),
-                "law_link": self._absolute_link((primary_law.get("raw") or {}).get("법령상세링크"))
-                or self._service_link(primary_law.get("law_id")),
+                "law_link": self._public_law_link(
+                    primary_law_name,
+                    primary_effective_date,
+                    primary_promulgation_no,
+                ),
             }
             if primary_law
             else None,

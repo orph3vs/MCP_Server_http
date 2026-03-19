@@ -254,6 +254,40 @@ class FakeLawApiSchoolYouth(FakeLawApiOk):
 
 
 class RequestPipelineTests(unittest.TestCase):
+    def test_absolute_link_strips_oc_query_parameter(self):
+        raw_link = "https://www.law.go.kr/DRF/lawService.do?OC=secret-value&target=law&MST=270351&type=HTML"
+
+        result = RequestPipeline._absolute_link(raw_link)
+
+        self.assertEqual(
+            result,
+            "https://www.law.go.kr/DRF/lawService.do?target=law&MST=270351&type=HTML",
+        )
+        self.assertNotIn("OC=", result)
+
+    def test_service_link_does_not_include_oc_query_parameter(self):
+        pipeline = RequestPipeline(law_api=FakeLawApiOk())
+
+        result = pipeline._service_link("011357", "제1조")
+
+        self.assertEqual(
+            result,
+            "https://www.law.go.kr/DRF/lawService.do?target=law&ID=011357&type=HTML&JO=000100",
+        )
+        self.assertNotIn("OC=", result)
+
+    def test_public_law_link_uses_readable_law_url(self):
+        result = RequestPipeline._public_law_link(
+            "전자상거래 등에서의 소비자보호에 관한 법률",
+            "20260120",
+            "21312",
+            "제9조",
+        )
+
+        self.assertEqual(
+            result,
+            "https://www.law.go.kr/법령/%EC%A0%84%EC%9E%90%EC%83%81%EA%B1%B0%EB%9E%98%EB%93%B1%EC%97%90%EC%84%9C%EC%9D%98%EC%86%8C%EB%B9%84%EC%9E%90%EB%B3%B4%ED%98%B8%EC%97%90%EA%B4%80%ED%95%9C%EB%B2%95%EB%A5%A0/%EC%A0%9C9%EC%A1%B0",
+        )
     def test_refined_precedent_queries_split_broad_question_into_issue_queries(self):
         queries = RequestPipeline._precedent_search_queries_refined(
             "대한민국에서 청소년 도박과 관련된 법적 근거를 설명해줘. 형사처벌, 청소년 보호, 온라인 도박, 업주나 플랫폼 책임도 같이 알려줘.",
@@ -297,6 +331,28 @@ class RequestPipelineTests(unittest.TestCase):
             self.assertEqual(logged.question_intent, "illegality")
             self.assertGreaterEqual(logged.law_search_count, 1)
             self.assertGreaterEqual(logged.nlic_calls, logged.law_search_count)
+
+    def test_process_exposes_public_law_links_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            pipeline = RequestPipeline(law_api=FakeLawApiOk(), logger=logger)
+
+            result = pipeline.process(
+                PipelineRequest(
+                    user_query="개인정보 보호법 제1조 설명",
+                    context="기준시점: 2025-01-01",
+                )
+            )
+
+            self.assertIsNone(result.error)
+            primary_law_link = result.citations["law_context"]["primary_law"]["law_link"]
+            article_link = result.citations["law_context"]["article"]["article_link"]
+            self.assertTrue(primary_law_link.startswith("https://www.law.go.kr/법령/"))
+            self.assertTrue(article_link.startswith("https://www.law.go.kr/법령/"))
+            self.assertNotIn("/(", primary_law_link)
+            self.assertNotIn("/(", article_link)
+            self.assertNotIn("/DRF/", primary_law_link)
+            self.assertNotIn("/DRF/", article_link)
 
     def test_process_enriches_context_with_article_and_version(self):
         with tempfile.TemporaryDirectory() as tmp:
