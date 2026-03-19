@@ -157,6 +157,9 @@ class RequestPipeline:
         "판결",
     )
     _PRECEDENT_SUFFIX = "\ud310\ub840"
+    _COMMON_LAW_ALIASES = {
+        "개보법": ("개인정보 보호법", "개인정보보호법"),
+    }
 
     def __init__(
         self,
@@ -432,8 +435,237 @@ class RequestPipeline:
         return clean_name.replace(" 시행령", "").replace(" 시행규칙", "").strip()
 
     @classmethod
+    def _law_slug(cls, law_name: str) -> str:
+        return re.sub(r"[^가-힣A-Za-z0-9]", "", cls._law_family_name(law_name)).lower()
+
+    @classmethod
+    def _candidate_law_references(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        if not normalized:
+            return []
+
+        candidates: List[str] = []
+        normalized_compact = re.sub(r"\s+", "", normalized.lower())
+        for alias, expansions in cls._COMMON_LAW_ALIASES.items():
+            if alias.lower() in normalized_compact:
+                candidates.extend(expansions)
+
+        explicit = cls._explicit_law_reference(normalized)
+        if explicit and cls._looks_like_law_reference(explicit):
+            candidates.append(explicit)
+
+        for match in re.finditer(
+            r"(?:^|[^A-Za-z0-9가-힣])([A-Za-z0-9가-힣]{2,40}(?:법률|법|시행령|시행규칙))(?:[^A-Za-z0-9가-힣]|$)",
+            normalized,
+        ):
+            candidate = cls._clean_text(match.group(1))
+            if candidate and cls._looks_like_law_reference(candidate):
+                candidates.append(candidate)
+
+        deduped: List[str] = []
+        seen = set()
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                deduped.append(candidate)
+        return deduped
+
+    @classmethod
+    def _looks_like_law_reference(cls, text: str) -> bool:
+        normalized = cls._clean_text(text)
+        if not normalized:
+            return False
+
+        compact = re.sub(r"\s+", "", normalized)
+        if compact in {"위법", "불법", "적법", "합법", "입법", "사법"}:
+            return False
+        if compact.endswith("법") and not compact.endswith("법률") and len(compact) < 4:
+            return False
+        if compact.endswith("법률") and len(compact) < 5:
+            return False
+        if compact.endswith("시행령") and len(compact) < 5:
+            return False
+        if compact.endswith("시행규칙") and len(compact) < 6:
+            return False
+        return compact.endswith(("법", "법률", "시행령", "시행규칙"))
+
+    @classmethod
+    def _looks_like_explicit_law_reference(cls, text: str) -> bool:
+        normalized = cls._clean_text(text)
+        if not cls._looks_like_law_reference(normalized):
+            return False
+
+        tokens = normalized.split()
+        if len(tokens) <= 3:
+            return True
+        return any(connector in normalized for connector in ("에 관한", "등에 관한", "등에서의", "및", "기본법"))
+
+    @classmethod
+    def _law_reference_search_queries(cls, law_reference: str) -> List[str]:
+        normalized = cls._clean_text(law_reference)
+        if not normalized:
+            return []
+
+        queries: List[str] = [normalized]
+        family = cls._law_family_name(normalized)
+        if family and family != normalized:
+            queries.append(family)
+
+        if normalized.endswith("법") and not normalized.endswith("법률"):
+            stem = normalized[:-1].strip()
+            if stem:
+                queries.append(stem)
+                queries.append(f"{stem} 법률")
+        elif normalized.endswith("법률"):
+            stem = normalized[: -len("법률")].strip()
+            if stem:
+                queries.append(stem)
+        elif normalized.endswith("시행령") or normalized.endswith("시행규칙"):
+            if family:
+                queries.append(family)
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            cleaned = cls._clean_text(query)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                deduped.append(cleaned)
+        return deduped
+
+    @classmethod
+    def _law_item_name_candidates(cls, item: Dict[str, Any]) -> List[str]:
+        if not isinstance(item, dict):
+            return []
+
+        names: List[str] = []
+        for key in ("법령명한글", "법령명", "법령명약칭", "법령약칭명", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                names.append(value.strip())
+
+        for key, value in item.items():
+            if "약칭" in str(key) and isinstance(value, str) and value.strip():
+                names.append(value.strip())
+
+        deduped: List[str] = []
+        seen = set()
+        for name in names:
+            cleaned = cls._clean_text(name)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                deduped.append(cleaned)
+        return deduped
+
+    def _resolve_official_law_queries(
+        self,
+        user_query: str,
+        related_law_queries: List[str],
+        metrics: Optional[Dict[str, int]] = None,
+    ) -> List[str]:
+        if not hasattr(self.law_api, "search_law"):
+            return []
+
+        candidates = self._candidate_law_references(user_query)
+        if not candidates:
+            return []
+
+        queries: List[str] = []
+        searched = set()
+        for candidate in candidates[:6]:
+            for search_query in self._law_reference_search_queries(candidate):
+                if search_query in searched:
+                    continue
+                searched.add(search_query)
+                if metrics is not None:
+                    self._increment_metric(metrics, "law_search_count")
+                    self._increment_metric(metrics, "nlic_calls")
+                try:
+                    result = self.law_api.search_law(search_query)
+                except Exception:
+                    continue
+                items = self._extract_law_items(result)
+                if not items:
+                    continue
+                queries.append(search_query)
+                prioritized = self._prioritize_law_data(
+                    result,
+                    user_query=user_query,
+                    related_law_queries=related_law_queries,
+                )
+                for item in self._extract_law_items(prioritized)[:4]:
+                    for name in self._law_item_name_candidates(item):
+                        queries.append(name)
+                        family = self._law_family_name(name)
+                        if family and family != name:
+                            queries.append(family)
+                        if family and self._should_run_keyword_article_scan(user_query):
+                            queries.append(f"{family} 시행령")
+                            queries.append(f"{family} 시행규칙")
+                            queries.extend(self._sensitive_identifier_title_queries(family))
+                break
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            cleaned = self._clean_text(query)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                deduped.append(cleaned)
+        return deduped
+
+    @classmethod
+    def _alias_matched_related_laws(
+        cls,
+        explicit_law_reference: Optional[str],
+        related_law_queries: List[str],
+    ) -> List[str]:
+        if not explicit_law_reference:
+            return []
+
+        explicit_slug = cls._law_slug(explicit_law_reference)
+        if not explicit_slug:
+            return []
+
+        matches: List[str] = []
+        normalized_explicit = cls._clean_text(explicit_law_reference).lower()
+        for law_name in related_law_queries:
+            related_slug = cls._law_slug(law_name)
+            if not related_slug:
+                continue
+            hint_match = any(
+                hint.lower() in normalized_explicit or normalized_explicit in hint.lower()
+                for hint in cls._RELATED_LAW_HINTS.get(law_name, ())
+            )
+            if explicit_slug in related_slug or related_slug in explicit_slug or hint_match:
+                matches.append(law_name)
+        return matches
+
+    @classmethod
+    def _sensitive_identifier_title_queries(cls, law_query: str) -> List[str]:
+        clean_query = cls._clean_text(law_query)
+        if not clean_query:
+            return []
+
+        titles = cls._SENSITIVE_IDENTIFIER_TITLE_KEYWORDS[:2]
+        if clean_query.endswith(" 시행령") or clean_query.endswith(" 시행규칙"):
+            return [f"{clean_query} {title}" for title in titles]
+        return [f"{clean_query} 시행령 {title}" for title in titles]
+
+    @classmethod
     def _explicit_law_reference(cls, user_query: str) -> Optional[str]:
         normalized = cls._clean_text(user_query)
+        candidates: List[str] = []
+        for match in re.finditer(
+            r"([가-힣A-Za-z0-9 ]+?(?:법률|법|시행령|시행규칙))",
+            normalized,
+        ):
+            candidate = cls._clean_text(match.group(1))
+            if candidate and cls._looks_like_explicit_law_reference(candidate):
+                candidates.append(candidate)
+        if candidates:
+            return max(candidates, key=len)
+        return None
         match = re.search(
             r"([가-힣A-Za-z0-9 ]+?(?:법 시행규칙|법 시행령|법|시행규칙|시행령))",
             normalized,
@@ -615,15 +847,25 @@ class RequestPipeline:
         related_law_queries = related_law_queries or []
         issue_terms = cls._extract_issue_query_terms(normalized)
         explicit_law_reference = cls._explicit_law_reference(normalized)
-        if explicit_law_reference:
+        candidate_law_references = cls._candidate_law_references(normalized)
+        if explicit_law_reference and not cls._is_sensitive_identifier_question(normalized):
             queries.append(explicit_law_reference)
+        elif candidate_law_references and not cls._is_sensitive_identifier_question(normalized):
+            queries.extend(candidate_law_references[:2])
 
         if cls._is_sensitive_identifier_question(normalized):
             priority_law_queries: List[str] = []
             seed_queries: List[str] = []
+            alias_matched_laws = cls._alias_matched_related_laws(explicit_law_reference, related_law_queries)
+            seed_queries.extend(alias_matched_laws[:4])
+            seed_queries.extend(candidate_law_references[:4])
             if explicit_law_reference:
                 seed_queries.append(explicit_law_reference)
-            seed_queries.extend(related_law_queries[:4])
+            seed_queries.extend(
+                related_law
+                for related_law in related_law_queries[:4]
+                if related_law not in seed_queries
+            )
 
             seen_priority = set()
             for seed in seed_queries:
@@ -633,6 +875,7 @@ class RequestPipeline:
                 if not seed.endswith("시행령") and not seed.endswith("시행규칙"):
                     priority_law_queries.append(f"{seed} 시행령")
                     priority_law_queries.append(f"{seed} 시행규칙")
+                priority_law_queries.extend(cls._sensitive_identifier_title_queries(seed))
                 priority_law_queries.append(seed)
             queries.extend(priority_law_queries)
 
@@ -796,12 +1039,12 @@ class RequestPipeline:
         score += len(query_tokens & law_tokens) * 3
 
         if explicit_law and law_name == explicit_law:
-            score += 14
+            score += 18
         elif explicit_family and explicit_family == law_family:
-            score += 10
+            score += 14
 
         if law_family and law_family in related_families:
-            score += 6
+            score += 12
 
         if cls._should_run_keyword_article_scan(normalized_query):
             if law_name.endswith("시행령"):
@@ -1059,9 +1302,9 @@ class RequestPipeline:
                 elif law_name.endswith("시행규칙"):
                     total_score += 2
                 if explicit_law_family and explicit_law_family == law_family:
-                    total_score += 8
+                    total_score += 12
                 if law_family and law_family in related_law_families:
-                    total_score += 6
+                    total_score += 12
                 if total_score > best_total_score:
                     best_total_score = total_score
                     best_match = matched
@@ -1455,7 +1698,28 @@ class RequestPipeline:
                 mode = "multi_agent"
 
             related_law_queries = search_analysis.related_law_queries
-            search_queries = search_analysis.search_queries
+            resolved_official_law_queries = self._resolve_official_law_queries(
+                req.user_query,
+                related_law_queries,
+                metrics=call_metrics,
+            )
+            if resolved_official_law_queries:
+                related_law_queries = list(
+                    dict.fromkeys(resolved_official_law_queries + related_law_queries)
+                )
+                search_queries = self._law_search_queries(
+                    req.user_query,
+                    related_law_queries=related_law_queries,
+                )
+                search_analysis = LawSearchAnalysis(
+                    question_intent=search_analysis.question_intent,
+                    issue_terms=search_analysis.issue_terms,
+                    related_law_queries=related_law_queries,
+                    search_queries=search_queries,
+                    proposed_keywords=search_analysis.proposed_keywords,
+                )
+            else:
+                search_queries = search_analysis.search_queries
             law_data: Dict[str, Any] = {}
             used_search_query: Optional[str] = None
             search_datasets: List[Dict[str, Any]] = []

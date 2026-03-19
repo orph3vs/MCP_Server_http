@@ -138,3 +138,27 @@
 - Full test suite is green again:
   - `python -m unittest discover -s tests -p 'test_*.py' -q`
   - `Ran 105 tests / OK`
+
+## Retrieval Follow-up (2026-03-19 / alias + decree titles)
+- Sensitive-identifier questions that mention a colloquial law alias should now prefer alias-matched official law families before treating the alias text itself as the primary search anchor.
+- Initial search query generation now includes decree-level direct-title queries earlier in the flow:
+  - e.g. `<법령명> 시행령 고유식별정보의 처리`
+  - e.g. `<법령명> 시행령 민감정보 및 고유식별정보의 처리`
+- Added regression coverage for:
+  - `노인일자리법` alias queries
+  - preference for the official decree path
+  - grounding to `제14조` style direct permission clauses
+## Retrieval Follow-up (2026-03-19 / generic alias normalization)
+- Alias handling was pushed one level broader so descriptive shorthand law names do not require one-off code edits whenever possible.
+- The pipeline now:
+  - extracts likely law-reference candidates from the user question
+  - resolves them through `search_law`
+  - feeds successful alias-resolution queries back into the main retrieval flow
+- Explicit law-reference detection was tightened so generic words like `위법`, `불법`, `적법` are not treated as law names.
+- Ranking was adjusted so when a question already points to a domain law family, that family is less likely to be displaced by a general framework law such as `개인정보 보호법`.
+- Added regression coverage for:
+  - descriptive alias canonicalization (`전자상거래법` -> official law)
+  - preserving `공동주택관리법` as primary law for apartment-management questions
+- Full suite:
+  - `python -m unittest discover -s tests -p 'test_*.py' -q`
+  - `Ran 110 tests / OK`
