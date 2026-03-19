@@ -151,3 +151,10 @@ C:\MCP_Server\MyMcpServer-http\run_mcp_stdio_server.cmd
 ```
 
 - `stdio` and HTTP share the same retrieval/answer core. Use `stdio` for local integration and HTTP for remote access.
+
+## 10) Core / Retrieval Update Notes
+- Shared MCP JSON-RPC core now lives in `src.mcp_core.py`.
+- `src.mcp_stdio_server.py` contains stdio transport only.
+- `src.mcp_http_server.py` contains HTTP transport only.
+- Retrieval now merges multiple successful `search_law` hits and re-ranks them globally instead of stopping at the first successful query.
+- Generic clause-scan keywords are now applied beyond one named domain/question family.

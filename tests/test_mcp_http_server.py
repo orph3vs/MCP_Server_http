@@ -1,8 +1,8 @@
 import json
 import unittest
 
+from src.mcp_core import McpServer
 from src.mcp_http_server import dispatch_http_payload, is_authorized_request, parse_jsonrpc_http_body
-from src.mcp_stdio_server import McpServer
 
 
 class FakeLawApi:

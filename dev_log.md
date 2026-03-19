@@ -121,3 +121,20 @@
 - Evidence output now separates:
   - clause/article-level links
   - whole-law link
+
+## Review Follow-up (2026-03-19)
+- Retrieval follow-up work was applied against `code_review.md` priorities rather than another single-case tuning pass.
+- The pipeline no longer hard-anchors on the first successful `search_law` hit:
+  - initial hits are accumulated
+  - merged candidates are re-prioritized globally
+  - related-law expansion and follow-up decree/regulation searches are re-ranked again before final grounding
+- Clause scanning was generalized beyond one question family:
+  - direct permission / exception / prohibition style clauses are now searched through generic title and trigger keywords
+  - sensitive-identifier questions still get extra decree/regulation emphasis, but the core scan is no longer tied to one named domain
+- The old school-youth-specific ranking boosts were removed from core scoring logic.
+- MCP shared core was split out of `src/mcp_stdio_server.py` into `src/mcp_core.py`.
+  - `src/mcp_stdio_server.py` now contains stdio transport only
+  - `src/mcp_http_server.py` now imports the shared core directly
+- Full test suite is green again:
+  - `python -m unittest discover -s tests -p 'test_*.py' -q`
+  - `Ran 105 tests / OK`

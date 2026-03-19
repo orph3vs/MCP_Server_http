@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 
-from src.mcp_stdio_server import McpProtocolError, McpServer
+from src.mcp_core import McpProtocolError, McpServer
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -> None:

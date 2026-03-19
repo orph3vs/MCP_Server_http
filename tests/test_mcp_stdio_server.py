@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from src.cost_logger import CostLogger
-from src.mcp_stdio_server import McpServer, _read_message, _write_message
+from src.mcp_core import McpServer
+from src.mcp_stdio_server import _read_message, _write_message
 from src.request_pipeline import PipelineResponse
 
 

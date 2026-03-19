@@ -534,8 +534,9 @@ class RequestPipelineTests(unittest.TestCase):
 
             self.assertIsNone(result.error)
             self.assertIn("공동주택관리법", law_api.search_queries)
+            self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "공동주택관리법")
             related_laws = result.citations["law_context"]["related_laws"]
-            self.assertTrue(any(item["law_name"] == "공동주택관리법" for item in related_laws))
+            self.assertTrue(any(item["law_name"] == "개인정보 보호법" for item in related_laws))
             self.assertIn("related_law_queries", result.citations["law_context"])
 
     def test_related_law_queries_include_location_law_hint(self):
@@ -576,8 +577,9 @@ class RequestPipelineTests(unittest.TestCase):
 
             self.assertIsNone(result.error)
             self.assertIn("도서관법", law_api.search_queries)
+            self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "도서관법")
             self.assertTrue(
-                any("도서관법" == (item.get("law_name")) for item in result.citations["law_context"]["related_laws"])
+                any("개인정보 보호법" == (item.get("law_name")) for item in result.citations["law_context"]["related_laws"])
             )
 
     def test_process_error_path_logs(self):
@@ -692,19 +694,18 @@ class RequestPipelineTests(unittest.TestCase):
             primary_law_name="학교 밖 청소년 지원에 관한 법률",
         )
 
-        self.assertEqual(queries[0], "청소년복지 지원법 시행령")
+        self.assertIn("청소년복지 지원법 시행령", queries)
+        self.assertIn("청소년복지 지원법", queries)
 
-    def test_sensitive_identifier_keywords_focus_on_school_youth_execution_clauses(self):
-        keywords = RequestPipeline._sensitive_identifier_keywords(
-            "학교밖청소년지원센터는 주민등록번호 수집 가능 함?"
+    def test_clause_scan_keywords_include_generic_permission_titles(self):
+        keywords = RequestPipeline._clause_scan_keywords(
+            "노인 일자리 및 사회활동 지원에 관한 법률에 근거해서 노인의 고유식별정보를 수집할 수 있는가"
         )
 
-        self.assertIn("학교밖청소년지원센터", keywords)
-        self.assertIn("학교 밖 청소년", keywords)
-        self.assertIn("가정 밖 청소년", keywords)
-        self.assertIn("통합정보시스템", keywords)
-        self.assertNotIn("상담", keywords)
-        self.assertNotIn("전문가 상담", keywords)
+        self.assertIn("고유식별정보의 처리", keywords)
+        self.assertIn("민감정보 및 고유식별정보의 처리", keywords)
+        self.assertIn("처리할 수", keywords)
+        self.assertIn("불가피", keywords)
 
     def test_law_search_queries_prioritize_enforcement_decree_for_sensitive_identifier_questions(self):
         queries = RequestPipeline._law_search_queries(
