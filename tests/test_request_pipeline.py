@@ -253,6 +253,29 @@ class FakeLawApiSchoolYouth(FakeLawApiOk):
         return None
 
 
+class FakeLawApiSeniorIdentifier(FakeLawApiOk):
+    def find_article_by_keywords(self, law_id, keywords):
+        if law_id == "011357":
+            return {
+                "law_id": "011357",
+                "article_no": "제24조",
+                "article_base_no": "제24조",
+                "article_text": "제24조(고유식별정보의 처리) 개인정보처리자는 ... 처리할 수 있다.",
+                "matched_via": "service:law:keyword_scan",
+                "score": 6,
+            }
+        if law_id == "014765":
+            return {
+                "law_id": "014765",
+                "article_no": "제14조",
+                "article_base_no": "제14조",
+                "article_text": "제14조(민감정보 및 고유식별정보의 처리) ... 처리할 수 있다.",
+                "matched_via": "service:law:keyword_scan",
+                "score": 6,
+            }
+        return None
+
+
 class RequestPipelineTests(unittest.TestCase):
     def test_absolute_link_strips_oc_query_parameter(self):
         raw_link = "https://www.law.go.kr/DRF/lawService.do?OC=secret-value&target=law&MST=270351&type=HTML"
@@ -682,6 +705,34 @@ class RequestPipelineTests(unittest.TestCase):
         self.assertIn("통합정보시스템", keywords)
         self.assertNotIn("상담", keywords)
         self.assertNotIn("전문가 상담", keywords)
+
+    def test_law_search_queries_prioritize_enforcement_decree_for_sensitive_identifier_questions(self):
+        queries = RequestPipeline._law_search_queries(
+            "노인 일자리 및 사회활동 지원에 관한 법률에 근거해서 노인의 고유식별정보를 수집할 수 있는가",
+            related_law_queries=["노인 일자리 및 사회활동 지원에 관한 법률"],
+        )
+
+        self.assertLess(
+            queries.index("노인 일자리 및 사회활동 지원에 관한 법률 시행령"),
+            queries.index("노인 일자리 및 사회활동 지원에 관한 법률"),
+        )
+
+    def test_find_keyword_matched_article_prefers_best_sensitive_identifier_match_over_first_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            pipeline = RequestPipeline(law_api=FakeLawApiSeniorIdentifier(), logger=logger)
+
+            matched = pipeline._find_keyword_matched_article(
+                user_query="노인 일자리 및 사회활동 지원에 관한 법률에 근거해서 노인의 고유식별정보를 수집할 수 있는가",
+                law_items=[
+                    {"법령ID": "011357", "법령명한글": "개인정보 보호법"},
+                    {"법령ID": "014765", "법령명한글": "노인 일자리 및 사회활동 지원에 관한 법률 시행령"},
+                ],
+            )
+
+            self.assertIsNotNone(matched)
+            self.assertEqual(matched["law_id"], "014765")
+            self.assertEqual(matched["article_no"], "제14조")
 
 if __name__ == "__main__":
     unittest.main()

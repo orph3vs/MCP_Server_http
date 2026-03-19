@@ -57,6 +57,13 @@ class LawSearchAnalysis:
 class RequestPipeline:
     """Coordinates all modules into one deterministic processing flow."""
 
+    _SENSITIVE_IDENTIFIER_TITLE_KEYWORDS = (
+        "고유식별정보의 처리",
+        "민감정보 및 고유식별정보의 처리",
+        "민감정보의 처리",
+        "주민등록번호의 처리",
+    )
+
     _RELATED_LAW_HINTS = {
         "개인정보 보호법": ("개인정보", "개인정보처리", "정보주체"),
         "개인정보의 안전성 확보조치 기준": ("안전성 확보조치", "안전조치", "접근권한", "접속기록", "암호화", "내부관리계획"),
@@ -371,7 +378,14 @@ class RequestPipeline:
     @classmethod
     def _sensitive_identifier_keywords(cls, user_query: str) -> List[str]:
         normalized = cls._clean_text(user_query)
-        keywords = ["주민등록번호", "고유식별정보", "민감정보", "처리할 수", "불가피"]
+        keywords = [
+            "주민등록번호",
+            "고유식별정보",
+            "민감정보",
+            "처리할 수",
+            "불가피",
+            *cls._SENSITIVE_IDENTIFIER_TITLE_KEYWORDS,
+        ]
         if "동의" in normalized:
             keywords.append("동의")
         if "학교밖청소년" in normalized or "학교 밖 청소년" in normalized:
@@ -394,6 +408,11 @@ class RequestPipeline:
                 seen.add(keyword)
                 deduped.append(keyword)
         return deduped
+
+    @classmethod
+    def _law_family_name(cls, law_name: str) -> str:
+        clean_name = cls._clean_text(law_name)
+        return clean_name.replace(" 시행령", "").replace(" 시행규칙", "").strip()
 
     @classmethod
     def _extract_precedent_issue_terms(cls, user_query: str) -> List[str]:
@@ -536,6 +555,24 @@ class RequestPipeline:
         )
         if law_name_match:
             queries.append(re.sub(r"\s+", " ", law_name_match.group(1)).strip())
+
+        if cls._is_sensitive_identifier_question(normalized):
+            priority_law_queries: List[str] = []
+            seed_queries: List[str] = []
+            if law_name_match:
+                seed_queries.append(re.sub(r"\s+", " ", law_name_match.group(1)).strip())
+            seed_queries.extend(related_law_queries[:4])
+
+            seen_priority = set()
+            for seed in seed_queries:
+                if not seed or seed in seen_priority:
+                    continue
+                seen_priority.add(seed)
+                if not seed.endswith("시행령") and not seed.endswith("시행규칙"):
+                    priority_law_queries.append(f"{seed} 시행령")
+                    priority_law_queries.append(f"{seed} 시행규칙")
+                priority_law_queries.append(seed)
+            queries.extend(priority_law_queries)
 
         simplified = re.sub(r"제\s*\d+\s*조(?:의\s*\d+)?", "", normalized)
         simplified = re.sub(r"\b(설명|해설|알려줘|알려 주세요|알려주세요|보여줘|요약|해석|뜻|뭐야)\b", "", simplified)
@@ -733,6 +770,36 @@ class RequestPipeline:
                 deduped.append(query)
         return deduped
 
+    @classmethod
+    def _sensitive_identifier_follow_up_queries(
+        cls,
+        user_query: str,
+        law_data: Dict[str, Any],
+    ) -> List[str]:
+        if not cls._is_sensitive_identifier_question(user_query):
+            return []
+
+        queries: List[str] = []
+        seen_families = set()
+        for item in cls._extract_law_items(law_data)[:8]:
+            law_name = cls._clean_text(
+                str(item.get("법령명한글") or item.get("법령명") or item.get("name") or "")
+            )
+            family = cls._law_family_name(law_name)
+            if not family or family in seen_families:
+                continue
+            seen_families.add(family)
+            queries.append(f"{family} 시행령")
+            queries.append(f"{family} 시행규칙")
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            if query and query not in seen:
+                seen.add(query)
+                deduped.append(query)
+        return deduped
+
     def _expand_related_law_network(
         self,
         law_data: Dict[str, Any],
@@ -844,7 +911,19 @@ class RequestPipeline:
             return None
 
         keywords = self._sensitive_identifier_keywords(user_query)
-        for item in law_items[:8]:
+        explicit_law_match = re.search(
+            r"([가-힣A-Za-z0-9 ]+?(?:법 시행규칙|법 시행령|법|시행규칙|시행령))",
+            self._clean_text(user_query),
+        )
+        explicit_law_family = self._law_family_name(explicit_law_match.group(1)) if explicit_law_match else ""
+        related_law_families = {
+            self._law_family_name(query)
+            for query in self._resolved_related_law_queries(user_query)
+            if self._law_family_name(query)
+        }
+        best_match: Optional[Dict[str, Any]] = None
+        best_total_score = -1
+        for item in law_items:
             if not isinstance(item, dict):
                 continue
             law_id = item.get("법령ID") or item.get("법령일련번호") or item.get("id")
@@ -862,8 +941,20 @@ class RequestPipeline:
                 continue
             if matched and matched.get("article_no"):
                 matched["law_name"] = law_name
-                return matched
-        return None
+                total_score = int(matched.get("score") or 0)
+                law_family = self._law_family_name(law_name)
+                if law_name.endswith("시행령"):
+                    total_score += 4
+                elif law_name.endswith("시행규칙"):
+                    total_score += 2
+                if explicit_law_family and explicit_law_family == law_family:
+                    total_score += 8
+                if law_family and law_family in related_law_families:
+                    total_score += 6
+                if total_score > best_total_score:
+                    best_total_score = total_score
+                    best_match = matched
+        return best_match
 
     def _build_law_enrichment(
         self,
@@ -1307,6 +1398,20 @@ class RequestPipeline:
                 if follow_up_datasets:
                     law_data = self._merge_law_results(follow_up_datasets + [law_data])
                 law_data = self._merge_related_law_items(law_data, related_network)
+
+            sensitive_follow_up_queries = self._sensitive_identifier_follow_up_queries(req.user_query, law_data)
+            sensitive_follow_up_datasets: List[Dict[str, Any]] = []
+            for follow_up_query in sensitive_follow_up_queries:
+                if follow_up_query in searched_queries:
+                    continue
+                searched_queries.add(follow_up_query)
+                self._increment_metric(call_metrics, "law_search_count")
+                self._increment_metric(call_metrics, "nlic_calls")
+                result = self.law_api.search_law(follow_up_query)
+                if result and self._extract_law_items(result):
+                    sensitive_follow_up_datasets.append(result)
+            if sensitive_follow_up_datasets:
+                law_data = self._merge_law_results(sensitive_follow_up_datasets + [law_data])
 
             law_enrichment = self._build_law_enrichment(
                 req.user_query,
