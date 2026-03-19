@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from src.context_builder import build_context
-from src.cost_logger import CostLogEntry
+from src.cost_logger import CostLogEntry, CostLogger
 from src.request_pipeline import PipelineRequest, RequestPipeline
 
 
@@ -605,12 +605,19 @@ def render_log_html(
 
 class PipelineHttpHandler(BaseHTTPRequestHandler):
     _pipeline: Optional[RequestPipeline] = None
+    _logger: Optional[CostLogger] = None
 
     @classmethod
     def get_pipeline(cls) -> RequestPipeline:
         if cls._pipeline is None:
             cls._pipeline = RequestPipeline()
         return cls._pipeline
+
+    @classmethod
+    def get_logger(cls) -> CostLogger:
+        if cls._logger is None:
+            cls._logger = CostLogger()
+        return cls._logger
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -625,10 +632,11 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
                 page = parse_recent_page(self.path)
                 offset = (page - 1) * limit
                 view = parse_recent_view(self.path)
-                rows_plus = self.get_pipeline().logger.list_recent(limit=limit + 1, offset=offset)
+                logger = self.get_logger()
+                rows_plus = logger.list_recent(limit=limit + 1, offset=offset)
                 has_next = len(rows_plus) > limit
                 rows = rows_plus[:limit]
-                summary = self.get_pipeline().logger.summarize_recent(limit=limit, offset=offset)
+                summary = logger.summarize_all()
                 if view == "table":
                     _text_response(self, 200, render_log_table(rows, summary))
                     return

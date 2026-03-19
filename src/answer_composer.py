@@ -396,6 +396,20 @@ class AnswerComposer:
         return "\n".join(lines)
 
     @classmethod
+    def _matched_clause_labels(cls, matched_clauses: List[Dict[str, Any]]) -> List[str]:
+        labels: List[str] = []
+        seen = set()
+        for clause in matched_clauses:
+            if not isinstance(clause, dict):
+                continue
+            label = cls._clean_text(str(clause.get("article_no", "")))
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+        return labels[:3]
+
+    @classmethod
     def _evidence_block(
         cls,
         law_name: str,
@@ -448,13 +462,25 @@ class AnswerComposer:
             lead_sentence = self._lead_sentence(composition_input.user_query, law_name, article_no, article_title)
             if intent == "explain":
                 lead_sentence = f"{law_name} {article_no}는 {article_title or '해당 조문'}에 관한 규정입니다."
+            clause_labels = self._matched_clause_labels(matched_clauses)
+            if clause_labels:
+                lead_sentence = f"{lead_sentence} 직접 관련 항목으로는 {', '.join(clause_labels)}가 확인됩니다."
+
+            clause_summary_block = None
+            if clause_labels:
+                clause_summary_lines = ["[직접 관련 항목]"]
+                clause_summary_lines.extend(f"- {label}" for label in clause_labels)
+                clause_summary_block = "\n".join(clause_summary_lines)
 
             lines = [
+                "[결론]",
                 lead_sentence,
                 "",
+                "[조문]",
                 "현재 확인한 조문은 다음과 같습니다.",
                 article_text,
                 "",
+                "[판단 포인트]",
                 self._build_plain_explanation(article_title, law_name, article_no),
             ]
 
@@ -468,6 +494,9 @@ class AnswerComposer:
                 lines.extend(["", self._applicability_summary(article_no, article_title, related_articles)])
             if intent == "procedure":
                 lines.extend(["", self._procedure_summary(article_no, related_articles)])
+
+            if clause_summary_block:
+                lines.extend(["", clause_summary_block])
 
             related_block = self._related_articles_block(related_articles, intent)
             if related_block:
@@ -500,6 +529,7 @@ class AnswerComposer:
                 lines.extend(
                     [
                         "",
+                        "[근거]",
                         self._evidence_block(
                             law_name,
                             article_no,

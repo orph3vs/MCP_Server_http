@@ -105,6 +105,37 @@ class CostLoggerTests(unittest.TestCase):
             self.assertEqual(summary["error_count"], 1)
             self.assertEqual(summary["precedent_request_count"], 1)
 
+    def test_summarize_all_is_not_affected_by_pagination(self):
+        fd, raw_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            db_path = Path(raw_path)
+            logger = CostLogger(db_path=str(db_path))
+            for idx in range(3):
+                logger.log_request(
+                    CostLogEntry(
+                        request_id=f"req-{idx}",
+                        risk_level="LOW",
+                        mode="single_agent",
+                        tokens_in=0,
+                        tokens_out=0,
+                        cost=0.001 * (idx + 1),
+                        latency=10.0 * (idx + 1),
+                        score=80.0,
+                        question_summary=f"질문 {idx}",
+                        question_intent="explain",
+                    )
+                )
+
+            paged = logger.summarize_recent(limit=2, offset=1)
+            full = logger.summarize_all()
+
+            self.assertEqual(paged["count"], 2)
+            self.assertEqual(full["count"], 3)
+            self.assertAlmostEqual(full["total_cost"], 0.006, places=6)
+        finally:
+            pass
+
 
 if __name__ == "__main__":
     unittest.main()

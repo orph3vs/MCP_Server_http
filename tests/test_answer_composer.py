@@ -365,7 +365,10 @@ class AnswerComposerTests(unittest.TestCase):
             )
         )
 
+        self.assertIn("[결론]", result)
+        self.assertIn("[조문]", result)
         self.assertIn("[직접 관련 항목]", result)
+        self.assertIn("[근거]", result)
         self.assertIn("제18조 제3호의2", result)
         self.assertIn("제18조 제6호", result)
 

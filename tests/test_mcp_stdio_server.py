@@ -44,7 +44,19 @@ class FakePipeline:
                 "law_search": {"used_search_query": "개인정보 보호법"},
                 "law_context": {
                     "primary_law": {"law_name": "개인정보 보호법", "law_id": "011357"},
-                    "article": {"article_no": "제1조"},
+                    "article": {
+                        "article_no": "제1조",
+                        "matched_clauses": [
+                            {
+                                "article_no": "제18조 제3호의2",
+                                "article_text_excerpt": "법 제12조의2에 따른 통합정보시스템의 구축ㆍ운영 등에 관한 사무",
+                            },
+                            {
+                                "article_no": "제18조 제6호",
+                                "article_text_excerpt": "법 제16조에 따른 가정 밖 청소년의 발생 예방 및 보호ㆍ지원에 관한 사무",
+                            },
+                        ],
+                    },
                     "precedent": {"case_name": "개인정보 사건", "case_no": "2025다12345"},
                 },
             },
@@ -110,6 +122,9 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(payload["answer"], "테스트 응답")
         self.assertEqual(payload["citations"]["law_search"]["used_search_query"], "개인정보 보호법")
         self.assertIn("테스트 응답", response["result"]["content"][0]["text"])
+        self.assertIn("[직접 관련 항목]", response["result"]["content"][0]["text"])
+        self.assertIn("제18조 제3호의2", response["result"]["content"][0]["text"])
+        self.assertIn("제18조 제6호", response["result"]["content"][0]["text"])
         self.assertIn("[참고 판례] 개인정보 사건", response["result"]["content"][0]["text"])
 
     def test_tools_call_answer_with_citations_alias(self):

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.cost_logger import CostLogEntry
 from src.http_server import (
+    PipelineHttpHandler,
     parse_ask_request,
     parse_recent_limit,
     parse_recent_page,
@@ -85,6 +86,19 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertEqual(parse_recent_view("/logs/recent?view=readable"), "readable")
         self.assertEqual(parse_recent_view("/logs/recent?view=table"), "table")
         self.assertEqual(parse_recent_view("/logs/recent?view=html"), "html")
+
+    def test_get_logger_does_not_require_pipeline_initialization(self):
+        original_pipeline = PipelineHttpHandler._pipeline
+        original_logger = PipelineHttpHandler._logger
+        try:
+            PipelineHttpHandler._pipeline = None
+            PipelineHttpHandler._logger = None
+            logger = PipelineHttpHandler.get_logger()
+            self.assertIsNotNone(logger)
+            self.assertIsNone(PipelineHttpHandler._pipeline)
+        finally:
+            PipelineHttpHandler._pipeline = original_pipeline
+            PipelineHttpHandler._logger = original_logger
 
     def test_to_readable_log_item(self):
         item = to_readable_log_item(

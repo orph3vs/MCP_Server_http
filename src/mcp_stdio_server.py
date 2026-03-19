@@ -280,6 +280,7 @@ class McpServer:
             law_context = citations.get("law_context") or {}
             primary_law = law_context.get("primary_law") or {}
             article = law_context.get("article") or {}
+            matched_clauses = article.get("matched_clauses") or []
             precedent = law_context.get("precedent") or {}
             lines = []
             if answer:
@@ -288,6 +289,17 @@ class McpServer:
                 lines.append(f"[근거 법령] {primary_law['law_name']} ({primary_law.get('law_id', '-')})")
             if article.get("article_no"):
                 lines.append(f"[관련 조문] {article['article_no']}")
+            if matched_clauses:
+                lines.append("[직접 관련 항목]")
+                for clause in matched_clauses[:3]:
+                    clause_no = str(clause.get("article_no", "")).strip()
+                    clause_text = str(
+                        clause.get("article_text_excerpt") or clause.get("article_text") or ""
+                    ).strip()
+                    if clause_no and clause_text:
+                        lines.append(f"- {clause_no}: {clause_text}")
+                    elif clause_no:
+                        lines.append(f"- {clause_no}")
             if precedent.get("case_name") or precedent.get("case_no"):
                 lines.append(f"[참고 판례] {precedent.get('case_name') or precedent.get('case_no')}")
             return "\n".join(lines).strip() or McpServer._tool_text(payload)

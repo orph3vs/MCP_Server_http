@@ -271,6 +271,53 @@ class CostLogger:
 
     def summarize_recent(self, limit: int = 100, offset: int = 0) -> dict[str, float | int]:
         rows = self.list_recent(limit=limit, offset=offset)
+        return self._summarize_rows(rows)
+
+    def summarize_all(self) -> dict[str, float | int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT request_id, entry_type, tool_name, question_summary, risk_level, mode, tokens_in, tokens_out, cost, latency, score,
+                       question_intent, error_stage, tool_calls, nlic_calls, law_search_count,
+                       version_fetch_count, article_fetch_count, related_article_count, related_law_count,
+                       precedent_search_count, precedent_fetch_count, has_precedent, has_related_laws
+                FROM request_cost_logs
+                ORDER BY created_at DESC, rowid DESC
+                """
+            ).fetchall()
+        entries = [
+            CostLogEntry(
+                request_id=row[0],
+                entry_type=row[1],
+                tool_name=row[2],
+                question_summary=row[3],
+                risk_level=row[4],
+                mode=row[5],
+                tokens_in=row[6],
+                tokens_out=row[7],
+                cost=row[8],
+                latency=row[9],
+                score=row[10],
+                question_intent=row[11],
+                error_stage=row[12],
+                tool_calls=row[13],
+                nlic_calls=row[14],
+                law_search_count=row[15],
+                version_fetch_count=row[16],
+                article_fetch_count=row[17],
+                related_article_count=row[18],
+                related_law_count=row[19],
+                precedent_search_count=row[20],
+                precedent_fetch_count=row[21],
+                has_precedent=bool(row[22]),
+                has_related_laws=bool(row[23]),
+            )
+            for row in rows
+        ]
+        return self._summarize_rows(entries)
+
+    @staticmethod
+    def _summarize_rows(rows: list[CostLogEntry]) -> dict[str, float | int]:
         if not rows:
             return {
                 "count": 0,
