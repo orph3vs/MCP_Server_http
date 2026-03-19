@@ -406,5 +406,38 @@ class AnswerComposerTests(unittest.TestCase):
         self.assertIn("제18조 제3호의2", result)
         self.assertIn("제18조 제6호", result)
 
+    def test_compose_separates_question_law_scope_from_supplementary_basis(self):
+        result = self.composer.compose(
+            AnswerCompositionInput(
+                user_query="노인일자리법에 근거해서 노인의 고유식별정보를 수집할 수 있는가?",
+                prompt_payload=PROMPT_PAYLOAD,
+                law_enrichment={
+                    "primary_law": {"law_name": "개인정보 보호법 시행령"},
+                    "question_law_scope": {
+                        "target_law_family": "노인 일자리 및 사회활동 지원에 관한 법률",
+                        "matched_laws": [
+                            {"law_name": "노인 일자리 및 사회활동 지원에 관한 법률"},
+                            {"law_name": "노인 일자리 및 사회활동 지원에 관한 법률 시행령"},
+                        ],
+                        "direct_basis_found": False,
+                    },
+                    "version": {"version_fields": {"시행일자": "20251002"}},
+                    "article": {
+                        "found": True,
+                        "article_no": "제24조",
+                        "article_text": "제24조(고유식별정보의 처리) 개인정보처리자는 법령에서 허용하는 경우 처리할 수 있다.",
+                    },
+                },
+                risk_level="LOW",
+                fallback_answer="",
+            )
+        )
+
+        self.assertIn("[질문 기준 법령 검토]", result)
+        self.assertIn("노인 일자리 및 사회활동 지원에 관한 법률 및 같은 법 시행령/시행규칙에서 직접 근거 조항을 우선 확인했지만", result)
+        self.assertIn("[관련 법령 참고]", result)
+        self.assertIn("개인정보 보호법 시행령 제24조", result)
+        self.assertIn("[결론]", result)
+
 if __name__ == "__main__":
     unittest.main()

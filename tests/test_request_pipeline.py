@@ -854,6 +854,24 @@ class RequestPipelineTests(unittest.TestCase):
             )
             self.assertEqual(result.citations["law_context"]["article"]["article_no"], "제14조")
 
+    def test_process_tracks_question_law_scope_for_alias_sensitive_identifier_question(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            pipeline = RequestPipeline(law_api=FakeLawApiSeniorIdentifierAlias(), logger=logger)
+
+            result = pipeline.process(
+                PipelineRequest(
+                    user_query="노인일자리법에 근거해서 노인의 고유식별정보를 수집할 수 있는가",
+                    context="기준시점: 2026-03-19",
+                )
+            )
+
+            self.assertIsNone(result.error)
+            question_scope = result.citations["law_context"]["question_law_scope"]
+            self.assertIn("노인", question_scope["target_law_family"])
+            self.assertTrue(question_scope["direct_basis_found"])
+            self.assertEqual(question_scope["article"]["article_no"], "제14조")
+
     def test_law_reference_search_queries_expand_descriptive_alias_without_manual_mapping(self):
         queries = RequestPipeline._law_reference_search_queries("전자상거래법")
 

@@ -95,6 +95,11 @@ class AnswerComposer:
         return compact[: max_chars - 3].rstrip() + "..."
 
     @classmethod
+    def _law_family_name(cls, law_name: str) -> str:
+        clean_name = cls._clean_text(law_name)
+        return clean_name.replace(" 시행령", "").replace(" 시행규칙", "").strip()
+
+    @classmethod
     def _article_category(cls, article_title: Optional[str]) -> Optional[str]:
         if not article_title:
             return None
@@ -436,9 +441,53 @@ class AnswerComposer:
             label = cls._clean_text(str(clause.get("article_no", "")))
             if not label or label in seen:
                 continue
-            seen.add(label)
-            labels.append(label)
+                seen.add(label)
+                labels.append(label)
         return labels[:3]
+
+    @classmethod
+    def _question_scope_block(
+        cls,
+        question_scope: Dict[str, Any],
+        *,
+        primary_law_name: str,
+        primary_article_no: str,
+    ) -> Optional[str]:
+        if not isinstance(question_scope, dict) or not question_scope:
+            return None
+        if question_scope.get("direct_basis_found"):
+            return None
+
+        target_law_family = cls._clean_text(str(question_scope.get("target_law_family", "")))
+        if not target_law_family:
+            return None
+
+        primary_family = cls._law_family_name(primary_law_name)
+        if primary_family and primary_family == cls._law_family_name(target_law_family):
+            return None
+
+        lines = [
+            "[질문 기준 법령 검토]",
+            f"{target_law_family} 및 같은 법 시행령/시행규칙에서 직접 근거 조항을 우선 확인했지만, 질문에 바로 대응하는 직접 근거 조문은 찾지 못했습니다.",
+        ]
+
+        matched_laws = [
+            law.get("law_name")
+            for law in question_scope.get("matched_laws", [])
+            if isinstance(law, dict) and cls._clean_text(str(law.get("law_name", "")))
+        ]
+        if matched_laws:
+            lines.append(f"- 검토한 법령 범위: {', '.join(matched_laws[:3])}")
+
+        if primary_law_name and primary_article_no:
+            lines.extend(
+                [
+                    "",
+                    "[관련 법령 참고]",
+                    f"현재 확보된 가장 가까운 보완 근거는 {primary_law_name} {primary_article_no}입니다.",
+                ]
+            )
+        return "\n".join(lines)
 
     @classmethod
     def _evidence_block(
@@ -505,6 +554,7 @@ class AnswerComposer:
         used_search_query = self._clean_text(str(law_enrichment.get("used_search_query", ""))) or None
         prompt_rules = self._prompt_rules(composition_input.prompt_payload)
         review_summary = law_enrichment.get("review_summary") or {}
+        question_scope = law_enrichment.get("question_law_scope") or {}
 
         law_name = self._clean_text(str(primary_law.get("law_name", "")))
         law_link = self._sanitize_link_for_display(primary_law.get("law_link"))
@@ -529,17 +579,28 @@ class AnswerComposer:
                 clause_summary_lines.extend(f"- {label}" for label in clause_labels)
                 clause_summary_block = "\n".join(clause_summary_lines)
 
-            lines = [
-                "[결론]",
-                lead_sentence,
-                "",
-                "[조문]",
-                "현재 확인한 조문은 다음과 같습니다.",
-                article_text,
-                "",
-                "[판단 포인트]",
-                self._build_plain_explanation(article_title, law_name, article_no),
-            ]
+            lines: List[str] = []
+            question_scope_block = self._question_scope_block(
+                question_scope,
+                primary_law_name=law_name,
+                primary_article_no=article_no,
+            )
+            if question_scope_block:
+                lines.extend([question_scope_block, ""])
+
+            lines.extend(
+                [
+                    "[결론]",
+                    lead_sentence,
+                    "",
+                    "[조문]",
+                    "현재 확인한 조문은 다음과 같습니다.",
+                    article_text,
+                    "",
+                    "[판단 포인트]",
+                    self._build_plain_explanation(article_title, law_name, article_no),
+                ]
+            )
 
             if intent == "difference":
                 comparison_summary = self._comparison_summary(article_no, article_title, related_articles)
@@ -601,7 +662,16 @@ class AnswerComposer:
             return "\n".join(lines).strip()
 
         if law_name:
-            lines = [f"질문과 가장 관련된 법령은 {law_name}입니다."]
+            lines: List[str] = []
+            question_scope_block = self._question_scope_block(
+                question_scope,
+                primary_law_name=law_name,
+                primary_article_no="",
+            )
+            if question_scope_block:
+                lines.extend([question_scope_block, ""])
+
+            lines.append(f"질문과 가장 관련된 법령은 {law_name}입니다.")
             if version_fields.get("시행일자"):
                 lines.append(f"현재 확인한 시행일자는 {version_fields['시행일자']}입니다.")
             else:

@@ -615,6 +615,155 @@ class RequestPipeline:
         return deduped
 
     @classmethod
+    def _question_law_reference_queries(
+        cls,
+        user_query: str,
+        resolved_official_law_queries: Optional[List[str]] = None,
+    ) -> List[str]:
+        base_candidates = cls._candidate_law_references(user_query)
+        candidate_slugs = {
+            re.sub(r"[^가-힣A-Za-z0-9]", "", cls._clean_text(search_query)).lower()
+            for candidate in base_candidates
+            for search_query in cls._law_reference_search_queries(candidate)
+            if cls._clean_text(search_query)
+        }
+
+        references: List[str] = []
+        for query in resolved_official_law_queries or []:
+            cleaned = cls._clean_text(query)
+            normalized_slug = re.sub(r"[^가-힣A-Za-z0-9]", "", cleaned).lower()
+            if (
+                cleaned
+                and cls._looks_like_law_reference(cleaned)
+                and (
+                    not candidate_slugs
+                    or any(
+                        candidate_slug in normalized_slug or normalized_slug in candidate_slug
+                        for candidate_slug in candidate_slugs
+                    )
+                )
+            ):
+                references.append(cleaned)
+
+        if not references:
+            for candidate in base_candidates:
+                if cls._looks_like_law_reference(candidate):
+                    references.append(candidate)
+
+        deduped: List[str] = []
+        seen = set()
+        for reference in references:
+            if reference and reference not in seen:
+                seen.add(reference)
+                deduped.append(reference)
+        return deduped
+
+    @classmethod
+    def _question_scope_law_items(
+        cls,
+        law_items: List[Dict[str, Any]],
+        question_references: List[str],
+    ) -> List[Dict[str, Any]]:
+        target_slugs = {
+            cls._law_slug(reference)
+            for reference in question_references
+            if cls._law_slug(reference)
+        }
+        if not target_slugs:
+            return []
+
+        scoped_items: List[Dict[str, Any]] = []
+        for item in law_items:
+            item_slugs = {
+                cls._law_slug(name)
+                for name in cls._law_item_name_candidates(item)
+                if cls._law_slug(name)
+            }
+            if any(
+                item_slug == target_slug or item_slug in target_slug or target_slug in item_slug
+                for item_slug in item_slugs
+                for target_slug in target_slugs
+            ):
+                scoped_items.append(item)
+        return scoped_items
+
+    def _build_question_law_scope(
+        self,
+        *,
+        user_query: str,
+        law_items: List[Dict[str, Any]],
+        question_law_queries: Optional[List[str]] = None,
+        metrics: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        question_references = self._question_law_reference_queries(
+            user_query,
+            resolved_official_law_queries=question_law_queries,
+        )
+        if not question_references:
+            return {}
+
+        scope_match_queries = list(question_references)
+        for candidate in self._candidate_law_references(user_query):
+            scope_match_queries.extend(self._law_reference_search_queries(candidate))
+
+        scoped_items = self._question_scope_law_items(law_items, scope_match_queries)
+        target_law_family = ""
+        if scoped_items:
+            target_law_family = self._law_family_name(
+                str(
+                    scoped_items[0].get("법령명한글")
+                    or scoped_items[0].get("법령명")
+                    or scoped_items[0].get("name")
+                    or ""
+                )
+            )
+        if not target_law_family:
+            for reference in question_references:
+                family = self._law_family_name(reference)
+                if family:
+                    target_law_family = family
+                    break
+
+        scope: Dict[str, Any] = {
+            "reference_queries": question_references,
+            "target_law_family": target_law_family or None,
+            "matched_laws": [
+                {
+                    "law_id": str(item.get("법령ID") or item.get("법령일련번호") or item.get("id") or "").strip() or None,
+                    "law_name": self._clean_text(
+                        str(item.get("법령명한글") or item.get("법령명") or item.get("name") or "")
+                    )
+                    or None,
+                }
+                for item in scoped_items[:5]
+            ],
+        }
+        if not scoped_items:
+            scope["direct_basis_found"] = False
+            return scope
+
+        scope["primary_law"] = self._pick_primary_law({"LawSearch": {"law": scoped_items}})
+        scope_match = self._find_keyword_matched_article(
+            user_query=user_query,
+            law_items=scoped_items,
+            metrics=metrics,
+        )
+        if scope_match and scope_match.get("article_no"):
+            scope["article"] = {
+                "law_id": scope_match.get("law_id"),
+                "article_no": scope_match.get("article_no"),
+                "article_base_no": scope_match.get("article_base_no"),
+                "found": True,
+                "matched_via": scope_match.get("matched_via"),
+                "article_text": scope_match.get("article_text"),
+                "matched_clauses": scope_match.get("matched_clauses", []),
+            }
+            scope["direct_basis_found"] = True
+        else:
+            scope["direct_basis_found"] = False
+        return scope
+
+    @classmethod
     def _alias_matched_related_laws(
         cls,
         explicit_law_reference: Optional[str],
@@ -1317,6 +1466,7 @@ class RequestPipeline:
         used_search_query: Optional[str] = None,
         risk_level: str = "LOW",
         metrics: Optional[Dict[str, int]] = None,
+        question_law_queries: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         all_laws = self._extract_law_items(law_data)
         keyword_matched_article = self._find_keyword_matched_article(
@@ -1345,6 +1495,14 @@ class RequestPipeline:
             "search_hit_count": len(all_laws),
             "primary_law": primary_law,
         }
+        question_law_scope = self._build_question_law_scope(
+            user_query=user_query,
+            law_items=all_laws,
+            question_law_queries=question_law_queries,
+            metrics=metrics,
+        )
+        if question_law_scope:
+            enrichment["question_law_scope"] = question_law_scope
         related_laws = []
         for item in all_laws[1:6]:
             law_id = item.get("법령ID") or item.get("법령일련번호") or item.get("id")
@@ -1629,6 +1787,38 @@ class RequestPipeline:
                 "decision_date": primary_precedent.get("선고일자"),
             }
 
+        question_law_scope = enrichment.get("question_law_scope") or {}
+        question_scope_summary = None
+        if question_law_scope:
+            scope_primary = question_law_scope.get("primary_law") or {}
+            scope_article = question_law_scope.get("article") or {}
+            question_scope_summary = {
+                "target_law_family": question_law_scope.get("target_law_family"),
+                "reference_queries": question_law_scope.get("reference_queries", []),
+                "matched_laws": question_law_scope.get("matched_laws", []),
+                "direct_basis_found": bool(question_law_scope.get("direct_basis_found")),
+                "primary_law": {
+                    "law_id": scope_primary.get("law_id"),
+                    "law_name": scope_primary.get("law_name"),
+                }
+                if scope_primary
+                else None,
+                "article": {
+                    "article_no": scope_article.get("article_no"),
+                    "article_text_excerpt": RequestPipeline._truncate_text(str(scope_article.get("article_text", "")), 180),
+                    "matched_clauses": [
+                        {
+                            "article_no": clause.get("article_no"),
+                            "article_text_excerpt": RequestPipeline._truncate_text(str(clause.get("article_text", "")), 120),
+                        }
+                        for clause in (scope_article.get("matched_clauses") or [])
+                        if isinstance(clause, dict) and clause.get("article_no")
+                    ],
+                }
+                if scope_article
+                else None,
+            }
+
         return {
             "search_queries": enrichment.get("search_queries", []),
             "related_law_queries": enrichment.get("related_law_queries", []),
@@ -1655,6 +1845,7 @@ class RequestPipeline:
             }
             if version
             else None,
+            "question_law_scope": question_scope_summary,
             "article": article_summary,
             "related_articles": related_summaries,
             "precedent": precedent_summary,
@@ -1707,9 +1898,12 @@ class RequestPipeline:
                 related_law_queries = list(
                     dict.fromkeys(resolved_official_law_queries + related_law_queries)
                 )
-                search_queries = self._law_search_queries(
+                generated_search_queries = self._law_search_queries(
                     req.user_query,
                     related_law_queries=related_law_queries,
+                )
+                search_queries = list(
+                    dict.fromkeys(resolved_official_law_queries + generated_search_queries)
                 )
                 search_analysis = LawSearchAnalysis(
                     question_intent=search_analysis.question_intent,
@@ -1808,6 +2002,7 @@ class RequestPipeline:
                 used_search_query=used_search_query,
                 risk_level=risk_level,
                 metrics=call_metrics,
+                question_law_queries=resolved_official_law_queries or related_law_queries,
             )
             law_enrichment["search_queries"] = search_queries
             law_enrichment["related_law_queries"] = related_law_queries
