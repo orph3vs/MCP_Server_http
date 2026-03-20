@@ -41,6 +41,40 @@ class AnswerComposer:
         "applicability": ("적용", "대상", "포함되는지", "제외되는지", "해당되는지"),
         "explain": ("설명", "해설", "풀어줘", "뜻이 뭐야", "알려줘"),
     }
+    _PRIVACY_PROCESSING_ACTIONS = {
+        "수집": ("수집", "받을 수", "받아도", "기재", "기입"),
+        "이용": ("이용", "활용", "처리"),
+        "제공": ("제공", "넘겨", "전달", "공유"),
+        "위탁": ("위탁", "수탁", "맡기", "관리업체", "외부업체"),
+        "목적 외 이용·제공": ("목적 외", "다른 용도", "2차 활용"),
+    }
+    _PRIVACY_PROCESSING_TOPIC_KEYWORDS = (
+        "개인정보",
+        "주민등록번호",
+        "고유식별정보",
+        "민감정보",
+        "연락처",
+        "주소",
+        "명부",
+        "동호수",
+        "차량번호",
+        "입주민",
+        "거주자",
+        "소유자",
+    )
+    _ACTOR_STATUS_KEYWORDS = (
+        "기관",
+        "업체",
+        "관리주체",
+        "관리업체",
+        "수탁자",
+        "위탁받은 자",
+        "주체",
+        "대표회의",
+        "사업자",
+        "운영자",
+        "관리인",
+    )
 
     @dataclass(frozen=True)
     class PromptRules:
@@ -191,6 +225,77 @@ class AnswerComposer:
         if intent == "applicability":
             return "필요하시면 어떤 대상이 포함되고 제외되는지 여부를 사례식으로 나눠서 설명해드릴 수 있습니다."
         return None
+
+    @classmethod
+    def _privacy_processing_actions(
+        cls,
+        user_query: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+    ) -> List[str]:
+        haystacks = [
+            cls._clean_text(user_query),
+            cls._clean_text(article_text or ""),
+        ]
+        for article in related_articles[:3]:
+            if isinstance(article, dict):
+                haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
+
+        found_actions: List[str] = []
+        for label, keywords in cls._PRIVACY_PROCESSING_ACTIONS.items():
+            if any(any(keyword in haystack for keyword in keywords) for haystack in haystacks):
+                found_actions.append(label)
+        return found_actions
+
+    @classmethod
+    def _is_privacy_processing_question(
+        cls,
+        user_query: str,
+        law_name: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+    ) -> bool:
+        haystacks = [
+            cls._clean_text(user_query),
+            cls._clean_text(law_name),
+            cls._clean_text(article_text or ""),
+        ]
+        for article in related_articles[:3]:
+            if isinstance(article, dict):
+                haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
+
+        if any(any(keyword in haystack for keyword in cls._PRIVACY_PROCESSING_TOPIC_KEYWORDS) for haystack in haystacks):
+            return True
+        return bool(cls._privacy_processing_actions(user_query, article_text, related_articles))
+
+    @classmethod
+    def _privacy_processing_summary(
+        cls,
+        user_query: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+    ) -> str:
+        normalized_query = cls._clean_text(user_query)
+        actions = cls._privacy_processing_actions(user_query, article_text, related_articles)
+        action_text = ", ".join(actions) if actions else "수집·이용·제공"
+        actor_hint = "질문에 나온 기관이나 업체" if any(
+            keyword in normalized_query for keyword in cls._ACTOR_STATUS_KEYWORDS
+        ) else "정보를 처리하는 주체"
+
+        lines = ["[실무 판단 구조]"]
+        lines.append(
+            f"1. 먼저 누가 정보를 처리하는지 봅니다. {actor_hint}가 직접 처리하는지, 위탁받은 자인지, 관리주체나 운영주체인지에 따라 적용 조문이 달라질 수 있습니다."
+        )
+        lines.append(
+            f"2. 질문된 행위를 나눠서 봅니다. 이번 사안에서는 특히 {action_text}을(를) 구분해서 봐야 하고, 각 행위마다 요구되는 근거가 다를 수 있습니다."
+        )
+        lines.append(
+            "3. 법적 근거도 분리해서 확인합니다. 법령상 의무·권한, 계약 이행 필요, 정보주체 동의, 제3자 제공 요건, 위탁 구조가 서로 다른 판단 기준이 됩니다."
+        )
+        lines.append(
+            "4. 가능한 경우에도 필요한 범위만 처리할 수 있습니다. 과도한 수집, 목적 외 이용·제공, 고유식별정보 확장은 별도 직접 근거가 있는지 추가로 확인해야 합니다."
+        )
+        return "\n".join(lines)
 
     @staticmethod
     def _build_risk_notice(risk_level: str, article_title: Optional[str], rules: "AnswerComposer.PromptRules") -> Optional[str]:
@@ -564,6 +669,12 @@ class AnswerComposer:
         matched_clauses = article.get("matched_clauses") or []
         article_title = self._extract_article_title(article_text) if article_text else None
         intent = self._question_intent(composition_input.user_query)
+        is_privacy_processing_question = self._is_privacy_processing_question(
+            composition_input.user_query,
+            law_name,
+            article_text,
+            related_articles,
+        )
 
         if law_name and article.get("found") and article_text and article_no:
             lead_sentence = self._lead_sentence(composition_input.user_query, law_name, article_no, article_title)
@@ -612,6 +723,17 @@ class AnswerComposer:
                 lines.extend(["", self._applicability_summary(article_no, article_title, related_articles)])
             if intent == "procedure":
                 lines.extend(["", self._procedure_summary(article_no, related_articles)])
+            if is_privacy_processing_question and intent in {"illegality", "applicability", "procedure"}:
+                lines.extend(
+                    [
+                        "",
+                        self._privacy_processing_summary(
+                            composition_input.user_query,
+                            article_text,
+                            related_articles,
+                        ),
+                    ]
+                )
 
             if clause_summary_block:
                 lines.extend(["", clause_summary_block])

@@ -439,5 +439,51 @@ class AnswerComposerTests(unittest.TestCase):
         self.assertIn("개인정보 보호법 시행령 제24조", result)
         self.assertIn("[결론]", result)
 
+def _patched_test_compose_privacy_processing_question_adds_practical_frame(self):
+    result = self.composer.compose(
+        AnswerCompositionInput(
+            user_query="아파트 관리업체가 입주민 정보를 수집하거나 제3자 제공해도 되는지 판단해줘",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제7조",
+                    "article_text": "제7조(관리방법의 결정 및 변경) 입주자등은 공동주택의 관리방법을 결정할 수 있다.",
+                },
+                "related_articles": [
+                    {
+                        "found": True,
+                        "article_no": "제15조",
+                        "article_text": "제15조(개인정보의 수집·이용) 개인정보처리자는 다음 각 호의 어느 하나에 해당하는 경우 개인정보를 수집할 수 있다.",
+                    },
+                    {
+                        "found": True,
+                        "article_no": "제17조",
+                        "article_text": "제17조(개인정보의 제공) 개인정보처리자는 다음 각 호의 어느 하나에 해당하는 경우 개인정보를 제공할 수 있다.",
+                    },
+                    {
+                        "found": True,
+                        "article_no": "제18조",
+                        "article_text": "제18조(개인정보의 목적 외 이용ㆍ제공 제한) 개인정보처리자는 목적 외로 이용하거나 제공하여서는 아니 된다.",
+                    },
+                ],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+        )
+    )
+
+    self.assertIn("[실무 판단 구조]", result)
+    self.assertIn("누가 정보를 처리하는지", result)
+    self.assertIn("수집, 이용, 제공, 위탁, 목적 외 이용·제공", result)
+    self.assertIn("제3자 제공 요건", result)
+    self.assertIn("목적 외 이용·제공", result)
+
+
+AnswerComposerTests.test_compose_privacy_processing_question_adds_practical_frame = _patched_test_compose_privacy_processing_question_adds_practical_frame
+
+
 if __name__ == "__main__":
     unittest.main()
