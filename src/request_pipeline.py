@@ -36,6 +36,8 @@ class PipelineResponse:
     score: float
     latency_ms: float
     error: Optional[Dict[str, str]] = None
+    clarification: Optional[Dict[str, Any]] = None
+    answer_plan: Optional[Dict[str, Any]] = None
 
 
 class PipelineStageError(RuntimeError):
@@ -160,6 +162,76 @@ class RequestPipeline:
     _COMMON_LAW_ALIASES = {
         "개보법": ("개인정보 보호법", "개인정보보호법"),
     }
+
+    _PRIVACY_PROCESSING_KEYWORDS = (
+        "개인정보",
+        "고유식별정보",
+        "민감정보",
+        "주민등록번호",
+        "외국인등록번호",
+        "정보를 수집",
+        "정보 수집",
+        "정보를 제공",
+        "정보 제공",
+        "정보를 처리",
+        "처리할 수",
+    )
+    _ACTOR_STATUS_KEYWORDS = (
+        "업체",
+        "기관",
+        "회사",
+        "사업자",
+        "센터",
+        "병원",
+        "학교",
+        "복지관",
+        "관리업체",
+        "수행기관",
+        "전담기관",
+        "플랫폼",
+        "협회",
+    )
+    _ROLE_SPECIFIC_KEYWORDS = (
+        "관리주체",
+        "위탁",
+        "수탁",
+        "제3자",
+        "처리자",
+        "관리업무",
+        "위임",
+        "위탁받은 자",
+        "관리주체로",
+        "선정된",
+        "계약을 체결",
+        "보건복지부장관",
+        "지방자치단체장",
+    )
+    _GENERIC_DATA_SCOPE_KEYWORDS = (
+        "정보",
+        "개인정보",
+        "주민 정보",
+        "입주민 정보",
+        "회원정보",
+        "고객정보",
+        "노인의 정보",
+    )
+    _SPECIFIC_DATA_SCOPE_KEYWORDS = (
+        "주민등록번호",
+        "고유식별정보",
+        "민감정보",
+        "외국인등록번호",
+        "여권번호",
+        "운전면허번호",
+        "연락처",
+        "전화번호",
+        "휴대전화",
+        "주소",
+        "차량번호",
+        "계좌번호",
+        "성명",
+        "이름",
+        "생년월일",
+    )
 
     def __init__(
         self,
@@ -770,6 +842,133 @@ class RequestPipeline:
         else:
             scope["direct_basis_found"] = False
         return scope
+
+    @classmethod
+    def _is_privacy_processing_question(
+        cls,
+        user_query: str,
+        *,
+        primary_law_name: str = "",
+        article_text: str = "",
+        related_articles: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
+        normalized = cls._clean_text(user_query)
+        if any(keyword in normalized for keyword in cls._PRIVACY_PROCESSING_KEYWORDS):
+            return True
+
+        combined_text = " ".join(
+            part
+            for part in (
+                cls._clean_text(primary_law_name),
+                cls._clean_text(article_text),
+            )
+            if part
+        )
+        if any(keyword in combined_text for keyword in cls._PRIVACY_PROCESSING_KEYWORDS[:5]):
+            return True
+
+        for article in related_articles or []:
+            if not isinstance(article, dict):
+                continue
+            article_text_value = cls._clean_text(str(article.get("article_text", "")))
+            if any(keyword in article_text_value for keyword in cls._PRIVACY_PROCESSING_KEYWORDS[:5]):
+                return True
+        return False
+
+    @classmethod
+    def _build_clarification(
+        cls,
+        *,
+        user_query: str,
+        risk_level: str,
+        question_intent: str,
+        enrichment: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        normalized = cls._clean_text(user_query)
+        practical_decision_query = any(
+            token in normalized for token in ("가능", "적법", "위법", "근거", "허용", "맡아서 할 수")
+        )
+        if question_intent not in {"applicability", "illegality", "procedure"} and not practical_decision_query:
+            return None
+
+        primary_law = enrichment.get("primary_law") or {}
+        article = enrichment.get("article") or {}
+        related_articles = enrichment.get("related_articles") or []
+        if not cls._is_privacy_processing_question(
+            user_query,
+            primary_law_name=str(primary_law.get("law_name", "")),
+            article_text=str(article.get("article_text", "")),
+            related_articles=related_articles,
+        ):
+            return None
+
+        missing_facts: List[str] = []
+        clarification_questions: List[str] = []
+
+        if any(token in normalized for token in cls._ACTOR_STATUS_KEYWORDS) and not any(
+            token in normalized for token in cls._ROLE_SPECIFIC_KEYWORDS
+        ):
+            missing_facts.append("정보를 처리하려는 주체의 법적 지위")
+            clarification_questions.append(
+                "그 업체·기관이 법령상 관리주체인지, 위탁 또는 수탁을 받은 외부 업체인지, 아니면 제3자인지 알 수 있나요?"
+            )
+
+        if any(token in normalized for token in ("수집", "받", "제공", "넘겨")) and not any(
+            token in normalized for token in ("직접", "제공받", "넘겨받", "위탁", "수탁", "제3자")
+        ):
+            missing_facts.append("정보가 직접 수집되는지 또는 다른 주체로부터 제공되는지")
+            clarification_questions.append(
+                "정보를 정보주체에게 직접 받는 상황인가요, 아니면 다른 기관·관리주체·원청으로부터 제공받는 상황인가요?"
+            )
+
+        if any(token in normalized for token in cls._GENERIC_DATA_SCOPE_KEYWORDS) and not any(
+            token in normalized for token in cls._SPECIFIC_DATA_SCOPE_KEYWORDS
+        ):
+            missing_facts.append("수집·이용하려는 정보 항목의 구체적 범위")
+            clarification_questions.append(
+                "수집하려는 정보가 연락처·동호수 같은 일반 개인정보인지, 주민등록번호·외국인등록번호 같은 고유식별정보까지 포함하는지 알 수 있나요?"
+            )
+
+        question_scope = enrichment.get("question_law_scope") or {}
+        target_law_family = cls._clean_text(str(question_scope.get("target_law_family", "")))
+        if target_law_family and not question_scope.get("direct_basis_found"):
+            missing_facts.append("질문 기준 법령에서 문제 되는 구체적 업무 범위")
+            clarification_questions.append(
+                f"{target_law_family} 기준으로는 어떤 업무를 위해 정보를 처리하려는 상황인지 알 수 있나요? 예를 들면 신청 접수, 자격 확인, 위탁 관리, 사고 보고 같은 업무입니다."
+            )
+
+        deduped_missing_facts: List[str] = []
+        seen_missing = set()
+        for item in missing_facts:
+            if item and item not in seen_missing:
+                seen_missing.add(item)
+                deduped_missing_facts.append(item)
+
+        deduped_questions: List[str] = []
+        seen_questions = set()
+        for item in clarification_questions:
+            if item and item not in seen_questions:
+                seen_questions.add(item)
+                deduped_questions.append(item)
+
+        if not deduped_questions:
+            return None
+
+        return {
+            "clarification_needed": True,
+            "clarification_reason": "행위자 지위, 정보 흐름, 정보 항목에 따라 적법성 결론이 달라질 수 있습니다.",
+            "missing_facts": deduped_missing_facts[:3],
+            "clarification_questions": deduped_questions[:3],
+            "decision_sensitivity": "high"
+            if risk_level == "HIGH" or cls._is_sensitive_identifier_question(user_query)
+            else "medium",
+            "current_answer_scope": {
+                "question_law_family": target_law_family or None,
+                "direct_basis_found_in_question_scope": bool(question_scope.get("direct_basis_found")),
+                "current_primary_law": cls._clean_text(str(primary_law.get("law_name", ""))) or None,
+                "current_primary_article": cls._clean_text(str(article.get("article_no", ""))) or None,
+            },
+        }
 
     @classmethod
     def _alias_matched_related_laws(
@@ -2228,6 +2427,7 @@ class RequestPipeline:
                     "target_law_family": self._law_family_name(explicit_question_law),
                     "direct_basis_found": False,
                 }
+                law_enrichment["question_law_scope"] = question_law_scope
             question_scope_family = self._law_family_name(str(question_law_scope.get("target_law_family") or ""))
             supplementary_primary_law = law_enrichment.get("primary_law") or {}
             supplementary_article = law_enrichment.get("article") or {}
@@ -2279,15 +2479,22 @@ class RequestPipeline:
                 law_enrichment=law_enrichment,
             )
             law_enrichment["review_summary"] = agent_result.review_summary
-            answer = self.answer_composer.compose(
-                AnswerCompositionInput(
-                    user_query=req.user_query,
-                    prompt_payload=prompt_payload,
-                    law_enrichment=law_enrichment,
-                    risk_level=risk_level,
-                    fallback_answer=agent_result.integrated_review,
-                )
+            clarification = self._build_clarification(
+                user_query=req.user_query,
+                risk_level=risk_level,
+                question_intent=intent,
+                enrichment=law_enrichment,
             )
+            composition_input = AnswerCompositionInput(
+                user_query=req.user_query,
+                prompt_payload=prompt_payload,
+                law_enrichment=law_enrichment,
+                risk_level=risk_level,
+                fallback_answer=agent_result.integrated_review,
+                clarification=clarification,
+            )
+            answer_plan = self.answer_composer.build_plan(composition_input)
+            answer = self.answer_composer.render_plan(answer_plan)
             tokens_out = len(answer.split())
 
             citations = {
@@ -2346,6 +2553,8 @@ class RequestPipeline:
                 citations=citations,
                 score=score,
                 latency_ms=latency,
+                clarification=clarification,
+                answer_plan=self.answer_composer.plan_as_dict(answer_plan),
             )
 
         except PipelineStageError as exc:
@@ -2392,6 +2601,8 @@ class RequestPipeline:
                 score=score,
                 latency_ms=latency,
                 error={"stage": exc.stage, "message": exc.message},
+                clarification=None,
+                answer_plan=None,
             )
         except Exception as exc:
             latency = round((time.perf_counter() - started) * 1000, 3)
@@ -2428,4 +2639,6 @@ class RequestPipeline:
                 score=score,
                 latency_ms=latency,
                 error={"stage": "Unhandled", "message": str(exc)},
+                clarification=None,
+                answer_plan=None,
             )

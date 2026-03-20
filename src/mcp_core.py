@@ -276,11 +276,27 @@ class McpServer:
         if tool_name in ("ask", "answer_with_citations"):
             answer = str(payload.get("answer", "")).strip()
             citations = payload.get("citations") or {}
+            clarification = payload.get("clarification") or {}
             law_context = citations.get("law_context") or {}
             primary_law = law_context.get("primary_law") or {}
             article = law_context.get("article") or {}
             matched_clauses = article.get("matched_clauses") or []
             precedent = law_context.get("precedent") or {}
+            answer_has_structured_sections = any(
+                marker in answer
+                for marker in (
+                    "[결론]",
+                    "[조문]",
+                    "[근거]",
+                    "[직접 관련 항목]",
+                    "[질문 기준 법령 검토]",
+                    "[관련 법령 참고]",
+                    "[실무 판단 구조]",
+                    "[추가 확인 필요]",
+                )
+            )
+            if answer and answer_has_structured_sections:
+                return answer
             lines = []
             if answer:
                 lines.append(answer)
@@ -301,6 +317,15 @@ class McpServer:
                         lines.append(f"- {clause_no}")
             if precedent.get("case_name") or precedent.get("case_no"):
                 lines.append(f"[참고 판례] {precedent.get('case_name') or precedent.get('case_no')}")
+            if clarification.get("clarification_needed"):
+                reason = str(clarification.get("clarification_reason", "")).strip()
+                lines.append("[추가 확인 필요]")
+                if reason:
+                    lines.append(reason)
+                for question in (clarification.get("clarification_questions") or [])[:3]:
+                    question_text = str(question).strip()
+                    if question_text:
+                        lines.append(f"- {question_text}")
             return "\n".join(lines).strip() or McpServer._tool_text(payload)
 
         if tool_name == "search_law":

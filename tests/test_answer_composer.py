@@ -485,5 +485,155 @@ def _patched_test_compose_privacy_processing_question_adds_practical_frame(self)
 AnswerComposerTests.test_compose_privacy_processing_question_adds_practical_frame = _patched_test_compose_privacy_processing_question_adds_practical_frame
 
 
+def _patched_test_compose_privacy_processing_question_adds_practical_frame_v2(self):
+    result = self.composer.compose(
+        AnswerCompositionInput(
+            user_query="아파트 관리업체가 입주민 정보를 수집하거나 제공받아도 되는지 판단해줘",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제7조",
+                    "article_text": "제7조(관리방법의 결정 및 변경) 입주자등은 공동주택의 관리방법을 결정할 수 있다.",
+                },
+                "related_articles": [
+                    {
+                        "found": True,
+                        "article_no": "제15조",
+                        "article_text": "제15조(개인정보의 수집·이용) 개인정보처리자는 다음 각 호의 어느 하나에 해당하는 경우 개인정보를 수집할 수 있다.",
+                    },
+                    {
+                        "found": True,
+                        "article_no": "제17조",
+                        "article_text": "제17조(개인정보의 제공) 개인정보처리자는 다음 각 호의 어느 하나에 해당하는 경우 개인정보를 제공할 수 있다.",
+                    },
+                    {
+                        "found": True,
+                        "article_no": "제18조",
+                        "article_text": "제18조(개인정보의 목적 외 이용ㆍ제공 제한) 개인정보처리자는 목적 외로 이용하거나 제공하여서는 아니 된다.",
+                    },
+                ],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+        )
+    )
+
+    self.assertIn("[실무 판단 구조]", result)
+    self.assertIn("누가 정보를 처리하는지", result)
+    self.assertIn("수집, 제공, 위탁", result)
+    self.assertIn("제3자 제공 요건", result)
+    self.assertIn("목적 외 이용·제공", result)
+
+
+AnswerComposerTests.test_compose_privacy_processing_question_adds_practical_frame = _patched_test_compose_privacy_processing_question_adds_practical_frame_v2
+
+
+def _patched_test_build_plan_exposes_structured_privacy_analysis(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="아파트 관리업체가 입주민 정보를 수집하거나 제공받아도 되는지 판단해줘",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제7조",
+                    "article_text": "제7조(관리방법의 결정 및 변경) 입주자등은 공동주택의 관리방법을 결정할 수 있다.",
+                },
+                "question_law_scope": {
+                    "target_law_family": "공동주택관리법",
+                    "matched_laws": [{"law_name": "공동주택관리법"}],
+                    "direct_basis_found": False,
+                },
+                "related_articles": [
+                    {
+                        "found": True,
+                        "article_no": "제15조",
+                        "article_text": "제15조(개인정보의 수집·이용) 개인정보처리자는 법적 근거가 있는 경우 개인정보를 수집·이용할 수 있다.",
+                    },
+                    {
+                        "found": True,
+                        "article_no": "제26조",
+                        "article_text": "제26조(업무위탁에 따른 개인정보의 처리 제한) 개인정보 처리업무를 위탁하는 경우 수탁자를 관리·감독하여야 한다.",
+                    },
+                ],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification={
+                "clarification_needed": True,
+                "clarification_questions": [
+                    "그 업체가 관리주체인지, 위탁을 받은 외부 업체인지 알 수 있나요?"
+                ],
+            },
+        )
+    )
+
+    self.assertIsNotNone(plan.privacy_analysis)
+    self.assertEqual(plan.privacy_analysis["data_scope"], "general")
+    self.assertIn("수집", plan.privacy_analysis["processing_actions"])
+    self.assertIn("제공", plan.privacy_analysis["processing_actions"])
+    self.assertTrue(
+        any(
+            checkpoint.startswith("개인정보 보호법 제15조")
+            for checkpoint in plan.privacy_analysis["legal_basis_checkpoints"]
+        )
+    )
+    payload = self.composer.plan_as_dict(plan)
+    self.assertEqual(payload["question_law_scope"]["status"], "direct_basis_not_found")
+    self.assertTrue(payload["privacy_analysis"]["clarification_needed"])
+
+
+AnswerComposerTests.test_build_plan_exposes_structured_privacy_analysis = _patched_test_build_plan_exposes_structured_privacy_analysis
+
+
+def _patched_test_privacy_analysis_ignores_related_article_false_positive_signals(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="관리주체가 입주민 연락처를 수집할 수 있나",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제7조",
+                    "article_text": "제7조(관리방법의 결정 및 변경) 입주자등은 공동주택의 관리방법을 결정할 수 있다.",
+                },
+                "related_articles": [
+                    {
+                        "found": True,
+                        "article_no": "제17조",
+                        "article_text": "제17조(개인정보의 제공) 개인정보처리자는 일정한 경우 개인정보를 제공할 수 있다.",
+                    },
+                    {
+                        "found": True,
+                        "article_no": "제24조의2",
+                        "article_text": "제24조의2(주민등록번호 처리의 제한) 주민등록번호는 법령상 근거가 있는 경우에만 처리할 수 있다.",
+                    },
+                ],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertIsNotNone(plan.privacy_analysis)
+    self.assertEqual(plan.privacy_analysis["data_scope"], "general")
+    self.assertIn("수집", plan.privacy_analysis["processing_actions"])
+    self.assertNotIn("제공", plan.privacy_analysis["processing_actions"])
+    self.assertFalse(
+        any("제24조의2" in checkpoint for checkpoint in plan.privacy_analysis["legal_basis_checkpoints"])
+    )
+
+
+AnswerComposerTests.test_privacy_analysis_ignores_related_article_false_positive_signals = _patched_test_privacy_analysis_ignores_related_article_false_positive_signals
+
+
 if __name__ == "__main__":
     unittest.main()

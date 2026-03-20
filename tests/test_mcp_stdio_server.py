@@ -81,6 +81,60 @@ class FakeErrorPipeline(FakePipeline):
         )
 
 
+class FakeClarificationPipeline(FakePipeline):
+    def process(self, req):
+        return PipelineResponse(
+            request_id=req.request_id or "req-clarify",
+            risk_level="HIGH",
+            mode="multi_agent",
+            answer=(
+                "[결론]\n기본 답변\n\n"
+                "[추가 확인 필요]\n"
+                "- 그 업체·기관이 법령상 관리주체인지, 위탁 또는 수탁을 받은 외부 업체인지 알 수 있나요?"
+            ),
+            citations={
+                "law_search": {"used_search_query": "공동주택관리법"},
+                "law_context": {
+                    "primary_law": {"law_name": "공동주택관리법", "law_id": "012345"},
+                    "article": {"article_no": "제7조"},
+                },
+            },
+            score=77.0,
+            latency_ms=9.4,
+            error=None,
+            clarification={
+                "clarification_needed": True,
+                "clarification_reason": "행위자 지위와 정보 흐름에 따라 결론이 달라질 수 있습니다.",
+                "clarification_questions": [
+                    "그 업체·기관이 법령상 관리주체인지, 위탁 또는 수탁을 받은 외부 업체인지 알 수 있나요?",
+                    "정보를 정보주체에게 직접 받는 상황인가요, 아니면 다른 기관이나 관리주체로부터 제공받는 상황인가요?",
+                ],
+            },
+            answer_plan={
+                "intent": "applicability",
+                "risk_level": "HIGH",
+                "direct_basis": {"law_name": "공동주택관리법", "article_no": "제7조", "found": True},
+                "question_law_scope": None,
+                "supplementary_basis": None,
+                "privacy_processing_question": True,
+                "processing_actions": ["수집"],
+                "privacy_analysis": {
+                    "actor_status_explicit": True,
+                    "processing_actions": ["수집"],
+                    "data_scope": "general",
+                    "legal_basis_checkpoints": ["개인정보 보호법 제15조 수집·이용 근거"],
+                    "clarification_needed": True,
+                },
+                "clarification": {
+                    "clarification_needed": True,
+                    "clarification_questions": [
+                        "그 업체·기관이 법령상 관리주체인지, 위탁 또는 수탁을 받은 외부 업체인지 알 수 있나요?"
+                    ],
+                },
+            },
+        )
+
+
 class McpServerTests(unittest.TestCase):
     def setUp(self):
         self.server = McpServer(pipeline=FakePipeline())
@@ -142,6 +196,33 @@ class McpServerTests(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         payload = response["result"]["structuredContent"]
         self.assertEqual(payload["answer"], "테스트 응답")
+
+    def test_tools_call_ask_exposes_clarification_in_text_and_payload(self):
+        server = McpServer(pipeline=FakeClarificationPipeline())
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "test", "version": "1.0"}},
+            }
+        )
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "ask", "arguments": {"user_query": "아파트 관리업체가 주민 정보를 수집할 수 있나요?"}},
+            }
+        )
+
+        self.assertFalse(response["result"]["isError"])
+        payload = response["result"]["structuredContent"]
+        self.assertTrue(payload["clarification"]["clarification_needed"])
+        self.assertTrue(payload["answer_plan"]["clarification"]["clarification_needed"])
+        self.assertTrue(payload["answer_plan"]["privacy_analysis"]["clarification_needed"])
+        self.assertEqual(response["result"]["content"][0]["text"].count("[추가 확인 필요]"), 1)
+        self.assertIn("관리주체", response["result"]["content"][0]["text"])
 
     def test_tools_call_answer_with_citations_returns_error_when_pipeline_fails(self):
         server = McpServer(pipeline=FakeErrorPipeline())

@@ -173,3 +173,90 @@
 - Full test suite is green in the current state:
   - `python -m unittest discover -s tests -p 'test_*.py' -q`
   - `Ran 114 tests / OK`
+
+## Answer Planning Follow-up (2026-03-20)
+- The answer layer now has an explicit planning step instead of composing directly from `law_enrichment`.
+- `src/answer_composer.py` now builds an `AnswerPlan` first and only then renders the final answer.
+  - derived fields such as:
+    - question-scope block
+    - related-article block
+    - matched-clause summary
+    - privacy-processing practical frame
+    - evidence block
+    - clarification block
+    are prepared in the plan before rendering
+- Rendering paths were split into:
+  - grounded article answer
+  - law-only answer
+  - fallback answer
+- This reduced the amount of repeated conditional logic inside one long `compose()` path and makes later answer-policy changes easier to isolate from retrieval changes.
+- Clarification handling was also moved into the planned answer flow:
+  - `RequestPipeline` now computes `clarification` before answer composition
+  - `AnswerComposer` renders `[추가 확인 필요]` from that structured data
+  - `src/mcp_core.py` also exposes the same clarification hints in MCP text output so clients that only render text still see them
+- Fixed a hidden bug in `_matched_clause_labels()` where deduped clause labels were not being collected due to an indentation mistake.
+- Current full-suite status after the answer-plan/clarification refactor:
+  - `python -m unittest discover -s tests -p 'test_*.py' -q`
+  - `Ran 124 tests / OK`
+
+## Answer Planning Follow-up 2 (2026-03-20)
+- The initial `AnswerPlan` refactor was extended so the plan is now also exposed in structured MCP output.
+- `PipelineResponse` now carries:
+  - `clarification`
+  - `answer_plan`
+- `answer_plan` currently exposes the main elements that matter to the client layer:
+  - intent / risk level
+  - direct basis
+  - question-law scope
+  - supplementary basis
+  - privacy-processing flag / processing actions
+  - clarification
+- `AnswerComposer` was further cleaned up:
+  - intent-specific content selection now goes through a dedicated helper instead of a long inline chain
+  - rendering is centralized through `render_plan()`
+- This makes it easier to keep answer policy changes separate from retrieval changes and gives clients a more stable contract than free-form text alone.
+- Full suite remains green after the structured-plan exposure:
+  - `python -m unittest discover -s tests -p 'test_*.py' -q`
+  - `Ran 124 tests / OK`
+
+## Answer Planning Follow-up 3 (2026-03-20)
+- The structured `answer_plan` contract now carries a dedicated `privacy_analysis` block for privacy-processing questions.
+- `privacy_analysis` currently includes:
+  - whether the actor status is explicit in the question
+  - inferred processing actions (`수집`, `이용`, `제공`, `위탁`, `목적 외 이용·제공`)
+  - inferred data-scope level (`general`, `identifier`, `mixed`, `unknown`)
+  - legal-basis checkpoints the client can use for follow-up handling
+  - whether clarification is still needed
+- `question_law_scope` in the structured plan now also exposes a coarse status:
+  - `direct_basis_found`
+  - `supplementary_basis_used`
+  - `direct_basis_not_found`
+  - `not_applicable`
+- This pushes one more layer of answer interpretation out of free-form text and into a stable structure that clients can reuse without re-parsing the rendered answer.
+- Regression coverage was extended so:
+  - ambiguous privacy-processing questions expose `privacy_analysis`
+  - MCP structured output keeps carrying that block
+  - question-scope status is visible in the serialized plan
+- Full suite after this phase:
+  - `python -m unittest discover -s tests -p 'test_*.py' -q`
+  - `Ran 125 tests / OK`
+
+## Answer Planning Stabilization (2026-03-20)
+- The phase-1/2/3 answer-planning work was reviewed for follow-up regressions and three concrete issues were tightened.
+- `privacy_analysis` no longer infers processing actions or data scope from loosely related articles by default.
+  - The structured analysis now prefers the user question plus the directly grounded article text.
+  - This reduces false positives such as turning a simple collection question into a mixed collection/provision/identifier analysis just because a related article mentioned `제공` or `주민등록번호`.
+- Fallback `question_law_scope` now persists back into `law_enrichment` when an explicit law reference is present but scoped grounding fails.
+  - This keeps clarification and `answer_plan.question_law_scope` aligned with the user's named law family.
+- MCP text summaries now avoid re-appending structured sections when the answer text already contains planner-rendered blocks such as:
+  - `[결론]`
+  - `[근거]`
+  - `[직접 관련 항목]`
+  - `[추가 확인 필요]`
+- Regression coverage was extended for:
+  - privacy-analysis false-positive prevention
+  - fallback question-scope persistence
+  - duplicate clarification block prevention in MCP text summaries
+- Full suite after the stabilization pass:
+  - `python -m unittest discover -s tests -p 'test_*.py' -q`
+  - `Ran 127 tests / OK`

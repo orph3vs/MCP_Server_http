@@ -361,6 +361,22 @@ class FakeLawApiAliasNormalization(FakeLawApiOk):
         return super().search_law(query)
 
 
+class FakeLawApiQuestionScopeFallback(FakeLawApiOk):
+    def search_law(self, query):
+        self.search_queries.append(query)
+        return {
+            "LawSearch": {
+                "law": [
+                    {
+                        "법령ID": "011357",
+                        "법령명한글": "개인정보 보호법",
+                        "법령일련번호": "270351",
+                    }
+                ]
+            }
+        }
+
+
 class RequestPipelineTests(unittest.TestCase):
     def test_absolute_link_strips_oc_query_parameter(self):
         raw_link = "https://www.law.go.kr/DRF/lawService.do?OC=secret-value&target=law&MST=270351&type=HTML"
@@ -1126,10 +1142,69 @@ def _patched_test_process_records_question_scope_gap_suggestion_when_related_bas
         )
 
 
+def _patched_test_process_adds_clarification_for_ambiguous_privacy_processing_question(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiOk()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="아파트 관리를 어떤 특정 업체에서 맡아서 할 수 있나? 그리고 그 업체에서는 주민들의 정보를 수집할 수 있어? 적법한 근거가 있는거야?",
+                context="기준시점: 2026-03-20",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertIsNotNone(result.clarification)
+        self.assertTrue(result.clarification["clarification_needed"])
+        self.assertGreaterEqual(len(result.clarification["clarification_questions"]), 2)
+        self.assertIn("법적 지위", " ".join(result.clarification["missing_facts"]))
+        self.assertTrue(any("관리주체" in question for question in result.clarification["clarification_questions"]))
+        self.assertTrue(any("직접 받는 상황" in question for question in result.clarification["clarification_questions"]))
+        self.assertIn("[추가 확인 필요]", result.answer)
+        self.assertIsNotNone(result.answer_plan)
+        self.assertTrue(result.answer_plan["clarification"]["clarification_needed"])
+        self.assertTrue(result.answer_plan["privacy_processing_question"])
+        self.assertIn("수집", result.answer_plan["processing_actions"])
+        self.assertIsNotNone(result.answer_plan["privacy_analysis"])
+        self.assertTrue(result.answer_plan["privacy_analysis"]["clarification_needed"])
+        self.assertIn("수집", result.answer_plan["privacy_analysis"]["processing_actions"])
+        self.assertTrue(
+            any(
+                checkpoint.startswith("개인정보 보호법 제15조")
+                for checkpoint in result.answer_plan["privacy_analysis"]["legal_basis_checkpoints"]
+            )
+        )
+        self.assertNotIn("제공", result.answer_plan["privacy_analysis"]["processing_actions"])
+
+
+def _patched_test_process_persists_fallback_question_scope_into_answer_plan(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiQuestionScopeFallback()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="전자상거래법에 근거해서 주민등록번호를 수집할 수 있나?",
+                context="기준시점: 2026-03-20",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertIsNotNone(result.answer_plan)
+        self.assertIsNotNone(result.answer_plan["question_law_scope"])
+        self.assertEqual(result.answer_plan["question_law_scope"]["target_law_family"], "전자상거래법")
+        self.assertEqual(result.answer_plan["question_law_scope"]["status"], "supplementary_basis_used")
+
+
 RequestPipelineTests.test_approved_law_hint_override_is_used_for_related_queries = _patched_test_approved_law_hint_override_is_used_for_related_queries
 RequestPipelineTests.test_error_suggestion_records_reason_code = _patched_test_error_suggestion_records_reason_code
 RequestPipelineTests.test_approved_law_hint_override_is_used_for_official_query_resolution = _patched_test_approved_law_hint_override_is_used_for_official_query_resolution
 RequestPipelineTests.test_process_records_question_scope_gap_suggestion_when_related_basis_is_used = _patched_test_process_records_question_scope_gap_suggestion_when_related_basis_is_used
+RequestPipelineTests.test_process_adds_clarification_for_ambiguous_privacy_processing_question = _patched_test_process_adds_clarification_for_ambiguous_privacy_processing_question
+RequestPipelineTests.test_process_persists_fallback_question_scope_into_answer_plan = _patched_test_process_persists_fallback_question_scope_into_answer_plan
 
 
 if __name__ == "__main__":

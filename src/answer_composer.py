@@ -15,6 +15,46 @@ class AnswerCompositionInput:
     law_enrichment: Dict[str, Any]
     risk_level: str
     fallback_answer: str
+    clarification: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class AnswerPlan:
+    user_query: str
+    intent: str
+    risk_level: str
+    law_name: str
+    law_link: Optional[str]
+    article_found: bool
+    article_no: str
+    article_title: Optional[str]
+    article_text: str
+    article_link: Optional[str]
+    version_fields: Dict[str, Any]
+    related_articles: List[Dict[str, Any]]
+    matched_clauses: List[Dict[str, Any]]
+    clause_labels: List[str]
+    question_scope_block: Optional[str]
+    related_block: Optional[str]
+    matched_clauses_block: Optional[str]
+    clause_summary_block: Optional[str]
+    precedent_block: Optional[str]
+    review_notice: Optional[str]
+    risk_notice: Optional[str]
+    tail_guidance: Optional[str]
+    privacy_processing_summary: Optional[str]
+    evidence_block: Optional[str]
+    clarification_block: Optional[str]
+    fallback_answer: str
+    system_prompt_present: bool
+    suppress_unsupported_claims: bool
+    require_confirmation_when_unclear: bool
+    question_scope: Dict[str, Any]
+    supplementary_basis: Optional[Dict[str, Any]]
+    privacy_processing_question: bool
+    processing_actions: List[str]
+    privacy_analysis: Optional[Dict[str, Any]]
+    clarification: Optional[Dict[str, Any]]
 
 
 class AnswerComposer:
@@ -232,14 +272,17 @@ class AnswerComposer:
         user_query: str,
         article_text: Optional[str],
         related_articles: List[Dict[str, Any]],
+        *,
+        include_related_articles: bool = False,
     ) -> List[str]:
         haystacks = [
             cls._clean_text(user_query),
             cls._clean_text(article_text or ""),
         ]
-        for article in related_articles[:3]:
-            if isinstance(article, dict):
-                haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
+        if include_related_articles:
+            for article in related_articles[:3]:
+                if isinstance(article, dict):
+                    haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
 
         found_actions: List[str] = []
         for label, keywords in cls._PRIVACY_PROCESSING_ACTIONS.items():
@@ -276,7 +319,12 @@ class AnswerComposer:
         related_articles: List[Dict[str, Any]],
     ) -> str:
         normalized_query = cls._clean_text(user_query)
-        actions = cls._privacy_processing_actions(user_query, article_text, related_articles)
+        actions = cls._privacy_processing_actions(
+            user_query,
+            article_text,
+            related_articles,
+            include_related_articles=False,
+        )
         action_text = ", ".join(actions) if actions else "수집·이용·제공"
         actor_hint = "질문에 나온 기관이나 업체" if any(
             keyword in normalized_query for keyword in cls._ACTOR_STATUS_KEYWORDS
@@ -296,6 +344,107 @@ class AnswerComposer:
             "4. 가능한 경우에도 필요한 범위만 처리할 수 있습니다. 과도한 수집, 목적 외 이용·제공, 고유식별정보 확장은 별도 직접 근거가 있는지 추가로 확인해야 합니다."
         )
         return "\n".join(lines)
+
+    @classmethod
+    def _privacy_data_scope(
+        cls,
+        user_query: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+        *,
+        include_related_articles: bool = False,
+    ) -> str:
+        haystacks = [
+            cls._clean_text(user_query),
+            cls._clean_text(article_text or ""),
+        ]
+        if include_related_articles:
+            for article in related_articles[:3]:
+                if isinstance(article, dict):
+                    haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
+
+        has_identifier = any(
+            any(keyword in haystack for keyword in ("주민등록번호", "고유식별정보", "외국인등록번호", "여권번호", "운전면허번호"))
+            for haystack in haystacks
+        )
+        has_general = any(
+            any(keyword in haystack for keyword in ("개인정보", "연락처", "주소", "동호수", "차량번호", "이름", "성명", "입주민"))
+            for haystack in haystacks
+        )
+        if has_identifier and has_general:
+            return "mixed"
+        if has_identifier:
+            return "identifier"
+        if has_general:
+            return "general"
+        return "unknown"
+
+    @classmethod
+    def _privacy_legal_basis_checkpoints(
+        cls,
+        *,
+        actions: List[str],
+        data_scope: str,
+    ) -> List[str]:
+        checkpoints: List[str] = []
+        if "수집" in actions or "이용" in actions:
+            checkpoints.append("개인정보 보호법 제15조 수집·이용 근거")
+        if "제공" in actions:
+            checkpoints.append("개인정보 보호법 제17조 제3자 제공 근거")
+        if "목적 외 이용·제공" in actions:
+            checkpoints.append("개인정보 보호법 제18조 목적 외 이용·제공 제한")
+        if "위탁" in actions:
+            checkpoints.append("개인정보 보호법 제26조 처리위탁 요건")
+        if data_scope == "identifier":
+            checkpoints.append("개인정보 보호법 제24조 및 제24조의2 고유식별정보·주민등록번호 제한")
+        elif data_scope == "mixed":
+            checkpoints.append("개인정보 보호법 제15조, 제17조, 제18조와 고유식별정보 제한 규정의 병행 검토")
+        return checkpoints
+
+    @classmethod
+    def _privacy_processing_analysis(
+        cls,
+        *,
+        user_query: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+        clarification: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        normalized_query = cls._clean_text(user_query)
+        actions = cls._privacy_processing_actions(
+            user_query,
+            article_text,
+            related_articles,
+            include_related_articles=False,
+        )
+        data_scope = cls._privacy_data_scope(
+            user_query,
+            article_text,
+            related_articles,
+            include_related_articles=False,
+        )
+        actor_status_explicit = any(keyword in normalized_query for keyword in cls._ACTOR_STATUS_KEYWORDS)
+        legal_basis_checkpoints = cls._privacy_legal_basis_checkpoints(actions=actions, data_scope=data_scope)
+        return {
+            "actor_status_explicit": actor_status_explicit,
+            "processing_actions": actions,
+            "data_scope": data_scope,
+            "legal_basis_checkpoints": legal_basis_checkpoints,
+            "clarification_needed": bool((clarification or {}).get("clarification_needed")),
+        }
+
+    @staticmethod
+    def _question_scope_status(
+        question_scope: Dict[str, Any],
+        supplementary_basis: Optional[Dict[str, Any]],
+    ) -> str:
+        if not question_scope:
+            return "not_applicable"
+        if question_scope.get("direct_basis_found"):
+            return "direct_basis_found"
+        if supplementary_basis:
+            return "supplementary_basis_used"
+        return "direct_basis_not_found"
 
     @staticmethod
     def _build_risk_notice(risk_level: str, article_title: Optional[str], rules: "AnswerComposer.PromptRules") -> Optional[str]:
@@ -546,8 +695,8 @@ class AnswerComposer:
             label = cls._clean_text(str(clause.get("article_no", "")))
             if not label or label in seen:
                 continue
-                seen.add(label)
-                labels.append(label)
+            seen.add(label)
+            labels.append(label)
         return labels[:3]
 
     @classmethod
@@ -649,7 +798,101 @@ class AnswerComposer:
             lines.append(f"- 추가 확인 조문: {', '.join(related_numbers[:3])}")
         return "\n".join(lines)
 
-    def compose(self, composition_input: AnswerCompositionInput) -> str:
+    @classmethod
+    def _clarification_block(cls, clarification: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(clarification, dict) or not clarification.get("clarification_needed"):
+            return None
+
+        lines = ["[추가 확인 필요]"]
+        reason = cls._clean_text(str(clarification.get("clarification_reason", "")))
+        if reason:
+            lines.append(reason)
+
+        for question in clarification.get("clarification_questions") or []:
+            question_text = cls._clean_text(str(question))
+            if question_text:
+                lines.append(f"- {question_text}")
+
+        if len(lines) == 1:
+            return None
+        return "\n".join(lines)
+
+    @classmethod
+    def _supplementary_basis_summary(
+        cls,
+        *,
+        question_scope: Dict[str, Any],
+        law_name: str,
+        article_no: str,
+        clause_labels: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(question_scope, dict) or not question_scope:
+            return None
+        if question_scope.get("direct_basis_found"):
+            return None
+        if not law_name:
+            return None
+
+        target_law_family = cls._clean_text(str(question_scope.get("target_law_family", "")))
+        if target_law_family and cls._law_family_name(target_law_family) == cls._law_family_name(law_name):
+            return None
+
+        summary: Dict[str, Any] = {
+            "law_name": law_name,
+            "article_no": article_no or None,
+        }
+        if clause_labels:
+            summary["clause_labels"] = clause_labels[:3]
+        return summary
+
+    @classmethod
+    def _intent_specific_block(cls, plan: AnswerPlan) -> Optional[str]:
+        if plan.intent == "difference":
+            return cls._comparison_summary(plan.article_no, plan.article_title, plan.related_articles)
+        if plan.intent == "illegality":
+            return cls._illegality_summary(plan.article_no, plan.article_title, plan.related_articles)
+        if plan.intent == "applicability":
+            return cls._applicability_summary(plan.article_no, plan.article_title, plan.related_articles)
+        if plan.intent == "procedure":
+            return cls._procedure_summary(plan.article_no, plan.related_articles)
+        return None
+
+    def render_plan(self, plan: AnswerPlan) -> str:
+        if plan.law_name and plan.article_found:
+            return self._render_grounded_article_plan(plan)
+        if plan.law_name:
+            return self._render_law_only_plan(plan)
+        return self._render_fallback_plan(plan)
+
+    @staticmethod
+    def plan_as_dict(plan: AnswerPlan) -> Dict[str, Any]:
+        question_scope = dict(plan.question_scope) if plan.question_scope else None
+        if question_scope is not None:
+            question_scope["status"] = AnswerComposer._question_scope_status(
+                plan.question_scope,
+                plan.supplementary_basis,
+            )
+        return {
+            "intent": plan.intent,
+            "risk_level": plan.risk_level,
+            "direct_basis": {
+                "law_name": plan.law_name or None,
+                "article_no": plan.article_no or None,
+                "article_title": plan.article_title,
+                "clause_labels": plan.clause_labels,
+                "found": plan.article_found,
+            }
+            if plan.law_name
+            else None,
+            "question_law_scope": question_scope,
+            "supplementary_basis": plan.supplementary_basis,
+            "privacy_processing_question": plan.privacy_processing_question,
+            "processing_actions": plan.processing_actions,
+            "privacy_analysis": plan.privacy_analysis,
+            "clarification": plan.clarification,
+        }
+
+    def build_plan(self, composition_input: AnswerCompositionInput) -> AnswerPlan:
         law_enrichment = composition_input.law_enrichment
         primary_law = law_enrichment.get("primary_law") or {}
         version = law_enrichment.get("version") or {}
@@ -669,178 +912,201 @@ class AnswerComposer:
         matched_clauses = article.get("matched_clauses") or []
         article_title = self._extract_article_title(article_text) if article_text else None
         intent = self._question_intent(composition_input.user_query)
-        is_privacy_processing_question = self._is_privacy_processing_question(
+        clause_labels = self._matched_clause_labels(matched_clauses)
+        processing_actions = self._privacy_processing_actions(
+            composition_input.user_query,
+            article_text,
+            related_articles,
+        )
+        privacy_processing_question = self._is_privacy_processing_question(
             composition_input.user_query,
             law_name,
             article_text,
             related_articles,
         )
 
-        if law_name and article.get("found") and article_text and article_no:
-            lead_sentence = self._lead_sentence(composition_input.user_query, law_name, article_no, article_title)
-            if intent == "explain":
-                lead_sentence = f"{law_name} {article_no}는 {article_title or '해당 조문'}에 관한 규정입니다."
-            clause_labels = self._matched_clause_labels(matched_clauses)
-            if clause_labels:
-                lead_sentence = f"{lead_sentence} 직접 관련 항목으로는 {', '.join(clause_labels)}가 확인됩니다."
+        clause_summary_block = None
+        if clause_labels:
+            clause_summary_lines = ["[직접 관련 항목]"]
+            clause_summary_lines.extend(f"- {label}" for label in clause_labels)
+            clause_summary_block = "\n".join(clause_summary_lines)
 
-            clause_summary_block = None
-            if clause_labels:
-                clause_summary_lines = ["[직접 관련 항목]"]
-                clause_summary_lines.extend(f"- {label}" for label in clause_labels)
-                clause_summary_block = "\n".join(clause_summary_lines)
-
-            lines: List[str] = []
-            question_scope_block = self._question_scope_block(
-                question_scope,
-                primary_law_name=law_name,
-                primary_article_no=article_no,
-            )
-            if question_scope_block:
-                lines.extend([question_scope_block, ""])
-
-            lines.extend(
-                [
-                    "[결론]",
-                    lead_sentence,
-                    "",
-                    "[조문]",
-                    "현재 확인한 조문은 다음과 같습니다.",
-                    article_text,
-                    "",
-                    "[판단 포인트]",
-                    self._build_plain_explanation(article_title, law_name, article_no),
-                ]
+        question_scope_block = self._question_scope_block(
+            question_scope,
+            primary_law_name=law_name,
+            primary_article_no=article_no,
+        )
+        related_block = self._related_articles_block(related_articles, intent)
+        matched_clauses_block = self._matched_clauses_block(matched_clauses)
+        precedent_block = self._precedent_block(law_enrichment)
+        review_notice = self._review_notice(review_summary, composition_input.risk_level)
+        risk_notice = self._build_risk_notice(composition_input.risk_level, article_title, prompt_rules)
+        tail_guidance = self._tail_guidance(composition_input.user_query, prompt_rules)
+        privacy_processing_summary = None
+        if privacy_processing_question and intent in {"illegality", "applicability", "procedure"}:
+            privacy_processing_summary = self._privacy_processing_summary(
+                composition_input.user_query,
+                article_text,
+                related_articles,
             )
 
-            if intent == "difference":
-                comparison_summary = self._comparison_summary(article_no, article_title, related_articles)
-                if comparison_summary:
-                    lines.extend(["", comparison_summary])
-            if intent == "illegality":
-                lines.extend(["", self._illegality_summary(article_no, article_title, related_articles)])
-            if intent == "applicability":
-                lines.extend(["", self._applicability_summary(article_no, article_title, related_articles)])
-            if intent == "procedure":
-                lines.extend(["", self._procedure_summary(article_no, related_articles)])
-            if is_privacy_processing_question and intent in {"illegality", "applicability", "procedure"}:
-                lines.extend(
-                    [
-                        "",
-                        self._privacy_processing_summary(
-                            composition_input.user_query,
-                            article_text,
-                            related_articles,
-                        ),
-                    ]
-                )
-
-            if clause_summary_block:
-                lines.extend(["", clause_summary_block])
-
-            related_block = self._related_articles_block(related_articles, intent)
-            if related_block:
-                lines.extend(["", related_block])
-
-            if version_fields.get("시행일자"):
-                lines.extend(["", f"기준 정보: 현재 확인한 시행일자는 {version_fields['시행일자']}입니다."])
-
-            matched_clauses_block = self._matched_clauses_block(matched_clauses)
-            if matched_clauses_block:
-                lines.extend(["", matched_clauses_block])
-
-            precedent_block = self._precedent_block(law_enrichment)
-            if precedent_block:
-                lines.extend(["", precedent_block])
-
-            review_notice = self._review_notice(review_summary, composition_input.risk_level)
-            if review_notice:
-                lines.extend(["", review_notice])
-
-            risk_notice = self._build_risk_notice(composition_input.risk_level, article_title, prompt_rules)
-            if risk_notice:
-                lines.extend(["", risk_notice])
-
-            tail_guidance = self._tail_guidance(composition_input.user_query, prompt_rules)
-            if tail_guidance:
-                lines.extend(["", tail_guidance])
-
-            if prompt_rules.require_evidence_mapping or prompt_rules.grounded_only:
-                lines.extend(
-                    [
-                        "",
-                        self._evidence_block(
-                            law_name,
-                            article_no,
-                            version_fields,
-                            used_search_query,
-                            related_articles,
-                            matched_clauses,
-                            law_link=law_link,
-                            article_link=article_link,
-                        ),
-                    ]
-                )
-            return "\n".join(lines).strip()
-
-        if law_name:
-            lines: List[str] = []
-            question_scope_block = self._question_scope_block(
-                question_scope,
-                primary_law_name=law_name,
-                primary_article_no="",
+        evidence_block = None
+        if prompt_rules.require_evidence_mapping or prompt_rules.grounded_only:
+            evidence_block = self._evidence_block(
+                law_name,
+                article_no,
+                version_fields,
+                used_search_query,
+                related_articles,
+                matched_clauses,
+                law_link=law_link,
+                article_link=article_link,
             )
-            if question_scope_block:
-                lines.extend([question_scope_block, ""])
 
-            lines.append(f"질문과 가장 관련된 법령은 {law_name}입니다.")
-            if version_fields.get("시행일자"):
-                lines.append(f"현재 확인한 시행일자는 {version_fields['시행일자']}입니다.")
-            else:
-                lines.append("현재 정보만으로는 시행일자를 특정하지 못했습니다.")
+        clarification_block = self._clarification_block(composition_input.clarification)
+        supplementary_basis = self._supplementary_basis_summary(
+            question_scope=question_scope,
+            law_name=law_name,
+            article_no=article_no,
+            clause_labels=clause_labels,
+        )
+        privacy_analysis = None
+        if privacy_processing_question:
+            privacy_analysis = self._privacy_processing_analysis(
+                user_query=composition_input.user_query,
+                article_text=article_text,
+                related_articles=related_articles,
+                clarification=composition_input.clarification,
+            )
 
-            lines.append("다만 현재 질문에 대응하는 조문 본문까지는 특정되지 않아, 우선 법령명과 버전 정보를 기준으로 안내드립니다.")
-            if composition_input.risk_level == "HIGH" or prompt_rules.require_confirmation_when_unclear:
-                lines.append("이 질문은 위법 여부나 제재 판단 요소가 있을 수 있어 현재 정보만으로 단정적으로 결론내리기보다 구체적 사실관계와 관련 조문을 함께 확인하는 편이 안전합니다.")
-            else:
-                lines.append("필요하시면 관련 조문이나 정의 조항을 추가로 특정해서 더 구체적으로 설명드릴 수 있습니다.")
+        return AnswerPlan(
+            user_query=composition_input.user_query,
+            intent=intent,
+            risk_level=composition_input.risk_level,
+            law_name=law_name,
+            law_link=law_link,
+            article_found=bool(article.get("found") and article_text and article_no),
+            article_no=article_no,
+            article_title=article_title,
+            article_text=article_text,
+            article_link=article_link,
+            version_fields=version_fields,
+            related_articles=related_articles,
+            matched_clauses=matched_clauses,
+            clause_labels=clause_labels,
+            question_scope_block=question_scope_block,
+            related_block=related_block,
+            matched_clauses_block=matched_clauses_block,
+            clause_summary_block=clause_summary_block,
+            precedent_block=precedent_block,
+            review_notice=review_notice,
+            risk_notice=risk_notice,
+            tail_guidance=tail_guidance,
+            privacy_processing_summary=privacy_processing_summary,
+            evidence_block=evidence_block,
+            clarification_block=clarification_block,
+            fallback_answer=composition_input.fallback_answer,
+            system_prompt_present=bool(composition_input.prompt_payload.get("system")),
+            suppress_unsupported_claims=prompt_rules.suppress_unsupported_claims,
+            require_confirmation_when_unclear=prompt_rules.require_confirmation_when_unclear,
+            question_scope=question_scope,
+            supplementary_basis=supplementary_basis,
+            privacy_processing_question=privacy_processing_question,
+            processing_actions=processing_actions,
+            privacy_analysis=privacy_analysis,
+            clarification=composition_input.clarification,
+        )
 
-            related_block = self._related_articles_block(related_articles, intent)
-            if related_block:
-                lines.extend(["", related_block])
+    def _render_grounded_article_plan(self, plan: AnswerPlan) -> str:
+        lead_sentence = self._lead_sentence(plan.user_query, plan.law_name, plan.article_no, plan.article_title)
+        if plan.intent == "explain":
+            lead_sentence = f"{plan.law_name} {plan.article_no}는 {plan.article_title or '해당 조문'}에 관한 규정입니다."
+        if plan.clause_labels:
+            lead_sentence = f"{lead_sentence} 직접 관련 항목으로는 {', '.join(plan.clause_labels)}가 확인됩니다."
 
-            precedent_block = self._precedent_block(law_enrichment)
-            if precedent_block:
-                lines.extend(["", precedent_block])
+        lines: List[str] = []
+        if plan.question_scope_block:
+            lines.extend([plan.question_scope_block, ""])
 
-            review_notice = self._review_notice(review_summary, composition_input.risk_level)
-            if review_notice:
-                lines.append(review_notice)
+        lines.extend(
+            [
+                "[결론]",
+                lead_sentence,
+                "",
+                "[조문]",
+                "현재 확인한 조문은 다음과 같습니다.",
+                plan.article_text,
+                "",
+                "[판단 포인트]",
+                self._build_plain_explanation(plan.article_title, plan.law_name, plan.article_no),
+            ]
+        )
 
-            tail_guidance = self._tail_guidance(composition_input.user_query, prompt_rules)
-            if tail_guidance and tail_guidance not in lines:
-                lines.append(tail_guidance)
+        intent_block = self._intent_specific_block(plan)
+        if intent_block:
+            lines.extend(["", intent_block])
+        if plan.privacy_processing_summary:
+            lines.extend(["", plan.privacy_processing_summary])
+        if plan.clause_summary_block:
+            lines.extend(["", plan.clause_summary_block])
+        if plan.related_block:
+            lines.extend(["", plan.related_block])
+        if plan.version_fields.get("시행일자"):
+            lines.extend(["", f"기준 정보: 현재 확인한 시행일자는 {plan.version_fields['시행일자']}입니다."])
+        if plan.matched_clauses_block:
+            lines.extend(["", plan.matched_clauses_block])
+        if plan.precedent_block:
+            lines.extend(["", plan.precedent_block])
+        if plan.review_notice:
+            lines.extend(["", plan.review_notice])
+        if plan.risk_notice:
+            lines.extend(["", plan.risk_notice])
+        if plan.tail_guidance:
+            lines.extend(["", plan.tail_guidance])
+        if plan.clarification_block:
+            lines.extend(["", plan.clarification_block])
+        if plan.evidence_block:
+            lines.extend(["", plan.evidence_block])
+        return "\n".join(lines).strip()
 
-            if prompt_rules.require_evidence_mapping or prompt_rules.grounded_only:
-                lines.extend(
-                    [
-                        "",
-                        self._evidence_block(
-                            law_name,
-                            "",
-                            version_fields,
-                            used_search_query,
-                            related_articles,
-                            [],
-                            law_link=law_link,
-                        ),
-                    ]
-                )
-            return "\n".join(lines).strip()
+    def _render_law_only_plan(self, plan: AnswerPlan) -> str:
+        lines: List[str] = []
+        if plan.question_scope_block:
+            lines.extend([plan.question_scope_block, ""])
 
-        if composition_input.prompt_payload.get("system") and composition_input.fallback_answer.strip():
-            if prompt_rules.suppress_unsupported_claims or prompt_rules.require_confirmation_when_unclear:
+        lines.append(f"질문과 가장 관련된 법령은 {plan.law_name}입니다.")
+        if plan.version_fields.get("시행일자"):
+            lines.append(f"현재 확인한 시행일자는 {plan.version_fields['시행일자']}입니다.")
+        else:
+            lines.append("현재 정보만으로는 시행일자를 특정하지 못했습니다.")
+
+        lines.append("다만 현재 질문에 대응하는 조문 본문까지는 특정되지 않아, 우선 법령명과 버전 정보를 기준으로 안내드립니다.")
+        if plan.risk_level == "HIGH" or plan.require_confirmation_when_unclear:
+            lines.append("이 질문은 위법 여부나 제재 판단 요소가 있을 수 있어 현재 정보만으로 단정적으로 결론내리기보다 구체적 사실관계와 관련 조문을 함께 확인하는 편이 안전합니다.")
+        else:
+            lines.append("필요하시면 관련 조문이나 정의 조항을 추가로 특정해서 더 구체적으로 설명드릴 수 있습니다.")
+
+        if plan.related_block:
+            lines.extend(["", plan.related_block])
+        if plan.precedent_block:
+            lines.extend(["", plan.precedent_block])
+        if plan.review_notice:
+            lines.append(plan.review_notice)
+        if plan.tail_guidance and plan.tail_guidance not in lines:
+            lines.append(plan.tail_guidance)
+        if plan.clarification_block:
+            lines.extend(["", plan.clarification_block])
+        if plan.evidence_block:
+            lines.extend(["", plan.evidence_block])
+        return "\n".join(lines).strip()
+
+    def _render_fallback_plan(self, plan: AnswerPlan) -> str:
+        if plan.system_prompt_present and plan.fallback_answer.strip():
+            if plan.suppress_unsupported_claims or plan.require_confirmation_when_unclear:
                 return "현재 확보된 법령 및 판례 근거만으로는 질문에 대해 단정적으로 답하기 어렵습니다. 관련 법령명, 조문번호, 사실관계를 더 확인하면 구체적으로 안내드릴 수 있습니다."
-            return self._truncate_text(composition_input.fallback_answer, max_chars=400)
-
+            return self._truncate_text(plan.fallback_answer, max_chars=400)
         return "관련 법령 정보를 확인했지만 현재 응답을 구성할 만큼 근거가 충분하지 않습니다."
+
+    def compose(self, composition_input: AnswerCompositionInput) -> str:
+        plan = self.build_plan(composition_input)
+        return self.render_plan(plan)
