@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.context_builder import build_context
 from src.cost_logger import CostLogEntry, CostLogger
+from src.law_hint_suggestions import LawHintSuggestion, LawHintSuggestionStore
 from src.request_pipeline import PipelineRequest, RequestPipeline
 
 
@@ -131,6 +132,15 @@ def parse_recent_view(path: str) -> str:
     return view
 
 
+def parse_suggestion_view(path: str) -> str:
+    parsed = urlparse(path)
+    query = parse_qs(parsed.query)
+    view = query.get("view", ["raw"])[0].strip().lower()
+    if view not in {"raw", "readable", "html"}:
+        raise ValueError("invalid_view")
+    return view
+
+
 def log_field_descriptions() -> Dict[str, str]:
     return {
         "entry_type": "로그 종류입니다. request는 질문 단위, tool은 개별 MCP 도구 호출입니다.",
@@ -232,6 +242,426 @@ def to_readable_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
         "오류요청수": summary.get("error_count", 0),
         "판례검색포함요청수": summary.get("precedent_request_count", 0),
     }
+
+
+def suggestion_field_descriptions() -> Dict[str, str]:
+    return {
+        "suggestion_type": "추천이 생성된 유형입니다. 완전 검색 실패인지, 질문 기준 법령과 보완 근거가 어긋난 경우인지 보여줍니다.",
+        "reason_code": "추천이 생성된 직접 사유 코드입니다.",
+        "question_law_family": "질문에서 기준으로 본 법령군입니다.",
+        "question_scope_direct_basis_found": "질문 기준 법령군 안에서 직접 근거를 찾았는지 여부입니다.",
+        "supplementary_law_name": "직접 근거를 못 찾았을 때 보완적으로 따라간 법령명입니다.",
+        "supplementary_article_no": "보완 법령에서 잡은 조문 번호입니다.",
+        "matched_clause_labels": "직접 관련 항목으로 인식한 항/호 라벨입니다.",
+        "approved_keywords": "승인 후 override에 반영된 키워드입니다.",
+    }
+
+
+def to_readable_suggestion_item(item: LawHintSuggestion) -> Dict[str, Any]:
+    return {
+        "상태": item.status,
+        "유형": item.suggestion_type,
+        "사유코드": item.reason_code or "-",
+        "질문요약": item.question_summary,
+        "질문의도": item.question_intent,
+        "질문기준법령군": item.question_law_family or "-",
+        "질문범위직접근거발견": item.question_scope_direct_basis_found,
+        "질문범위조문": item.question_scope_article_no or "-",
+        "보완법령": item.supplementary_law_name or "-",
+        "보완조문": item.supplementary_article_no or "-",
+        "직접관련항목": item.matched_clause_labels or [],
+        "관련법후보": item.related_law_queries,
+        "이슈키워드": item.issue_terms,
+        "검색쿼리": item.search_queries,
+        "제안키워드": item.proposed_keywords,
+        "발생횟수": item.occurrence_count,
+        "생성시각": item.created_at,
+        "갱신시각": item.updated_at,
+        "승인법령": item.approved_law_name or "-",
+        "승인키워드": item.approved_keywords or [],
+    }
+
+
+def summarize_suggestions(items: list[LawHintSuggestion]) -> Dict[str, Any]:
+    summary = {
+        "count": len(items),
+        "pending_count": 0,
+        "approved_count": 0,
+        "rejected_count": 0,
+        "law_search_gap_count": 0,
+        "question_scope_gap_count": 0,
+    }
+    for item in items:
+        if item.status == "pending":
+            summary["pending_count"] += 1
+        elif item.status == "approved":
+            summary["approved_count"] += 1
+        elif item.status == "rejected":
+            summary["rejected_count"] += 1
+
+        if item.suggestion_type == "law_search_gap":
+            summary["law_search_gap_count"] += 1
+        elif item.suggestion_type == "question_scope_gap":
+            summary["question_scope_gap_count"] += 1
+    return summary
+
+
+def render_suggestion_html(
+    items: list[LawHintSuggestion],
+    *,
+    approved_overrides: Dict[str, list[str]],
+    status: Optional[str] = None,
+) -> str:
+    def esc(value: Any) -> str:
+        return html.escape(str(value))
+
+    summary = summarize_suggestions(items)
+    summary_cards = "".join(
+        f"""
+        <div class="card">
+          <div class="label">{esc(label)}</div>
+          <div class="value">{esc(value)}</div>
+        </div>
+        """
+        for label, value in [
+            ("전체 추천 수", summary["count"]),
+            ("대기 중", summary["pending_count"]),
+            ("승인됨", summary["approved_count"]),
+            ("거절됨", summary["rejected_count"]),
+            ("검색 실패형", summary["law_search_gap_count"]),
+            ("질문범위 gap형", summary["question_scope_gap_count"]),
+            ("승인 override 법령 수", len(approved_overrides)),
+        ]
+    )
+
+    rows = []
+    for item in items:
+        related_laws = "".join(f"<li>{esc(name)}</li>" for name in item.related_law_queries) or "<li>-</li>"
+        keywords = "".join(f"<li>{esc(name)}</li>" for name in item.proposed_keywords) or "<li>-</li>"
+        clause_labels = "".join(f"<li>{esc(name)}</li>" for name in (item.matched_clause_labels or [])) or "<li>-</li>"
+        approved_keywords = "".join(f"<li>{esc(name)}</li>" for name in (item.approved_keywords or [])) or "<li>-</li>"
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{esc(item.status)}</strong></td>
+              <td>{esc(item.suggestion_type)}</td>
+              <td>{esc(item.reason_code or "-")}</td>
+              <td>{esc(item.question_summary)}</td>
+              <td>{esc(item.question_law_family or "-")}</td>
+              <td>{esc(item.supplementary_law_name or "-")}</td>
+              <td>{esc(item.supplementary_article_no or "-")}</td>
+              <td>{esc(item.occurrence_count)}</td>
+              <td>{esc(item.updated_at)}</td>
+            </tr>
+            <tr class="detail-row">
+              <td colspan="9">
+                <div class="detail-grid">
+                  <div><div class="detail-label">질문 원문</div><div>{esc(item.user_query)}</div></div>
+                  <div><div class="detail-label">질문 범위 직접 근거</div><div>{esc(item.question_scope_direct_basis_found)}</div></div>
+                  <div><div class="detail-label">질문 범위 조문</div><div>{esc(item.question_scope_article_no or "-")}</div></div>
+                  <div><div class="detail-label">직접 관련 항목</div><ul>{clause_labels}</ul></div>
+                  <div><div class="detail-label">관련 법 후보</div><ul>{related_laws}</ul></div>
+                  <div><div class="detail-label">제안 키워드</div><ul>{keywords}</ul></div>
+                  <div><div class="detail-label">승인 법령</div><div>{esc(item.approved_law_name or "-")}</div></div>
+                  <div><div class="detail-label">승인 키워드</div><ul>{approved_keywords}</ul></div>
+                </div>
+              </td>
+            </tr>
+            """
+        )
+
+    selected_status = status or "all"
+    status_options = "".join(
+        f'<option value="{esc(value)}" {"selected" if selected_status == value else ""}>{esc(label)}</option>'
+        for value, label in [("all", "전체"), ("pending", "pending"), ("approved", "approved"), ("rejected", "rejected")]
+    )
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Law Hint Suggestions</title>
+  <style>
+    body {{ font-family: sans-serif; margin: 0; background: #f6f1e8; color: #1f2a37; }}
+    .page {{ max-width: 1440px; margin: 0 auto; padding: 28px; }}
+    .hero, .panel, .card {{ background: rgba(255,255,255,0.76); border: 1px solid rgba(193, 153, 92, 0.22); border-radius: 24px; box-shadow: 0 20px 48px rgba(134, 97, 40, 0.08); }}
+    .hero, .panel {{ padding: 24px 28px; margin-bottom: 20px; }}
+    .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }}
+    .card {{ padding: 18px 22px; }}
+    .label {{ font-size: 14px; color: #7b5b2f; margin-bottom: 10px; }}
+    .value {{ font-size: 20px; font-weight: 700; }}
+    table {{ width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.88); border-radius: 20px; overflow: hidden; }}
+    th, td {{ padding: 14px 16px; border-bottom: 1px solid rgba(193, 153, 92, 0.18); vertical-align: top; text-align: left; }}
+    th {{ background: rgba(246, 238, 224, 0.95); }}
+    .detail-row td {{ background: rgba(251, 247, 239, 0.8); }}
+    .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }}
+    .detail-label {{ font-size: 12px; color: #7b5b2f; margin-bottom: 6px; font-weight: 700; }}
+    ul {{ margin: 0; padding-left: 18px; }}
+    select, button {{ font: inherit; padding: 10px 14px; border-radius: 14px; border: 1px solid rgba(193, 153, 92, 0.36); background: #fffaf1; }}
+    .controls {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <h1>Law Hint Suggestions</h1>
+      <p>법령 정규화 실패, 질문 기준 법령군과 보완 근거의 어긋남을 모아 운영자가 검토하는 대시보드입니다.</p>
+    </div>
+    <div class="summary-grid">{summary_cards}</div>
+    <div class="panel">
+      <div class="controls">
+        <label for="status">상태 필터</label>
+        <select id="status" onchange="location.href='?status=' + (this.value === 'all' ? '' : this.value) + '&view=html'">
+          {status_options}
+        </select>
+        <button onclick="location.reload()">새로고침</button>
+      </div>
+    </div>
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>상태</th>
+            <th>유형</th>
+            <th>사유코드</th>
+            <th>질문요약</th>
+            <th>질문기준법령군</th>
+            <th>보완법령</th>
+            <th>보완조문</th>
+            <th>발생횟수</th>
+            <th>최근갱신</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows) or '<tr><td colspan="9">표시할 추천이 없습니다.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def suggestion_field_descriptions() -> Dict[str, str]:
+    return {
+        "suggestion_type": "추천이 생성된 유형입니다. 완전 검색 실패인지, 질문 기준 법령과 보완 근거가 갈린 경우인지 보여줍니다.",
+        "reason_code": "추천이 생성된 직접 사유 코드입니다.",
+        "question_law_family": "질문에서 기준으로 삼은 법령군입니다.",
+        "question_scope_direct_basis_found": "질문 기준 법령군 안에서 직접 근거를 찾았는지 여부입니다.",
+        "supplementary_law_name": "질문 기준 법령군 밖에서 보완적으로 따라간 법령입니다.",
+        "supplementary_article_no": "보완 법령에서 확인된 조문 번호입니다.",
+        "matched_clause_labels": "직접 관련 항목으로 식별된 항/호 목록입니다.",
+        "proposed_keywords": "진단 과정에서 참고용으로 뽑은 키워드입니다. 자동 runtime 힌트가 아닙니다.",
+        "recommended_change_type": "이 suggestion이 제안하는 보강 유형입니다.",
+        "runtime_safe": "true이면 승인 시 runtime override rule로 반영 가능하고, false이면 코드/정책 검토가 필요합니다.",
+        "approval_effect": "승인할 경우 어떤 효과가 생기는지 설명합니다.",
+        "approved_rule_type": "승인 후 실제로 생성된 runtime rule 유형입니다.",
+    }
+
+
+def to_readable_suggestion_item(item: LawHintSuggestion) -> Dict[str, Any]:
+    return {
+        "상태": item.status,
+        "유형": item.suggestion_type,
+        "사유코드": item.reason_code or "-",
+        "질문요약": item.question_summary,
+        "질문의도": item.question_intent,
+        "질문기준법령군": item.question_law_family or "-",
+        "질문범위직접근거발견": item.question_scope_direct_basis_found,
+        "질문범위조문": item.question_scope_article_no or "-",
+        "보완법령": item.supplementary_law_name or "-",
+        "보완조문": item.supplementary_article_no or "-",
+        "직접관련항목": item.matched_clause_labels or [],
+        "관련법후보": item.related_law_queries,
+        "이슈키워드": item.issue_terms,
+        "검색쿼리": item.search_queries,
+        "진단키워드": item.proposed_keywords,
+        "추천보강유형": item.recommended_change_type or "-",
+        "runtime안전": item.runtime_safe,
+        "승인효과": item.approval_effect or "-",
+        "발생횟수": item.occurrence_count,
+        "생성시각": item.created_at,
+        "갱신시각": item.updated_at,
+        "승인법령": item.approved_law_name or "-",
+        "승인키워드": item.approved_keywords or [],
+        "승인rule유형": item.approved_rule_type or "-",
+        "승인ruleID": item.approved_rule_id or "-",
+    }
+
+
+def summarize_suggestions(items: list[LawHintSuggestion]) -> Dict[str, Any]:
+    summary = {
+        "count": len(items),
+        "pending_count": 0,
+        "approved_count": 0,
+        "rejected_count": 0,
+        "law_search_gap_count": 0,
+        "question_scope_gap_count": 0,
+        "runtime_safe_count": 0,
+    }
+    for item in items:
+        if item.status == "pending":
+            summary["pending_count"] += 1
+        elif item.status == "approved":
+            summary["approved_count"] += 1
+        elif item.status == "rejected":
+            summary["rejected_count"] += 1
+
+        if item.suggestion_type == "law_search_gap":
+            summary["law_search_gap_count"] += 1
+        elif item.suggestion_type == "question_scope_gap":
+            summary["question_scope_gap_count"] += 1
+        if item.runtime_safe:
+            summary["runtime_safe_count"] += 1
+    return summary
+
+
+def render_suggestion_html(
+    items: list[LawHintSuggestion],
+    *,
+    override_rule_count: int,
+    status: Optional[str] = None,
+) -> str:
+    def esc(value: Any) -> str:
+        return html.escape(str(value))
+
+    summary = summarize_suggestions(items)
+    summary_cards = "".join(
+        f"""
+        <div class="card">
+          <div class="label">{esc(label)}</div>
+          <div class="value">{esc(value)}</div>
+        </div>
+        """
+        for label, value in [
+            ("전체 추천 수", summary["count"]),
+            ("대기 중", summary["pending_count"]),
+            ("승인됨", summary["approved_count"]),
+            ("거절됨", summary["rejected_count"]),
+            ("검색 실패형", summary["law_search_gap_count"]),
+            ("질문범위 gap형", summary["question_scope_gap_count"]),
+            ("runtime-safe", summary["runtime_safe_count"]),
+            ("활성 rule 수", override_rule_count),
+        ]
+    )
+
+    rows = []
+    for item in items:
+        related_laws = "".join(f"<li>{esc(name)}</li>" for name in item.related_law_queries) or "<li>-</li>"
+        issue_terms = "".join(f"<li>{esc(name)}</li>" for name in item.issue_terms) or "<li>-</li>"
+        keywords = "".join(f"<li>{esc(name)}</li>" for name in item.proposed_keywords) or "<li>-</li>"
+        clause_labels = "".join(f"<li>{esc(name)}</li>" for name in (item.matched_clause_labels or [])) or "<li>-</li>"
+        approved_keywords = "".join(f"<li>{esc(name)}</li>" for name in (item.approved_keywords or [])) or "<li>-</li>"
+        payload_html = esc(json.dumps(item.recommended_change_payload or {}, ensure_ascii=False, indent=2))
+        rows.append(
+            f"""
+            <tr>
+              <td><strong>{esc(item.status)}</strong></td>
+              <td>{esc(item.suggestion_type)}</td>
+              <td>{esc(item.reason_code or "-")}</td>
+              <td>{esc(item.question_summary)}</td>
+              <td>{esc(item.question_law_family or "-")}</td>
+              <td>{esc(item.supplementary_law_name or "-")}</td>
+              <td>{esc(item.supplementary_article_no or "-")}</td>
+              <td>{esc(item.recommended_change_type or "-")}</td>
+              <td>{esc(item.runtime_safe)}</td>
+              <td>{esc(item.updated_at)}</td>
+            </tr>
+            <tr class="detail-row">
+              <td colspan="10">
+                <div class="detail-grid">
+                  <div><div class="detail-label">질문 원문</div><div>{esc(item.user_query)}</div></div>
+                  <div><div class="detail-label">질문 범위 직접 근거</div><div>{esc(item.question_scope_direct_basis_found)}</div></div>
+                  <div><div class="detail-label">질문 범위 조문</div><div>{esc(item.question_scope_article_no or "-")}</div></div>
+                  <div><div class="detail-label">직접 관련 항목</div><ul>{clause_labels}</ul></div>
+                  <div><div class="detail-label">관련 법 후보</div><ul>{related_laws}</ul></div>
+                  <div><div class="detail-label">이슈 키워드</div><ul>{issue_terms}</ul></div>
+                  <div><div class="detail-label">진단 키워드</div><ul>{keywords}</ul></div>
+                  <div><div class="detail-label">승인 효과</div><div>{esc(item.approval_effect or "-")}</div></div>
+                  <div><div class="detail-label">추천 payload</div><pre>{payload_html}</pre></div>
+                  <div><div class="detail-label">승인 법령</div><div>{esc(item.approved_law_name or "-")}</div></div>
+                  <div><div class="detail-label">승인 키워드</div><ul>{approved_keywords}</ul></div>
+                  <div><div class="detail-label">승인 rule</div><div>{esc(item.approved_rule_type or "-")} / {esc(item.approved_rule_id or "-")}</div></div>
+                </div>
+              </td>
+            </tr>
+            """
+        )
+
+    selected_status = status or "all"
+    status_options = "".join(
+        f'<option value="{esc(value)}" {"selected" if selected_status == value else ""}>{esc(label)}</option>'
+        for value, label in [("all", "전체"), ("pending", "pending"), ("approved", "approved"), ("rejected", "rejected")]
+    )
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Law Hint Suggestions</title>
+  <style>
+    body {{ font-family: "Segoe UI", "Malgun Gothic", sans-serif; margin: 0; background: #f6f1e8; color: #1f2a37; }}
+    .page {{ max-width: 1480px; margin: 0 auto; padding: 28px; }}
+    .hero, .panel, .card {{ background: rgba(255,255,255,0.82); border: 1px solid rgba(193, 153, 92, 0.22); border-radius: 24px; box-shadow: 0 20px 48px rgba(134, 97, 40, 0.08); }}
+    .hero, .panel {{ padding: 24px 28px; margin-bottom: 20px; }}
+    .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 20px; }}
+    .card {{ padding: 18px 22px; }}
+    .label {{ font-size: 13px; color: #7b5b2f; margin-bottom: 10px; }}
+    .value {{ font-size: 20px; font-weight: 700; }}
+    table {{ width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.88); border-radius: 20px; overflow: hidden; }}
+    th, td {{ padding: 14px 16px; border-bottom: 1px solid rgba(193, 153, 92, 0.18); vertical-align: top; text-align: left; }}
+    th {{ background: rgba(246, 238, 224, 0.95); }}
+    .detail-row td {{ background: rgba(251, 247, 239, 0.8); }}
+    .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }}
+    .detail-label {{ font-size: 12px; color: #7b5b2f; margin-bottom: 6px; font-weight: 700; }}
+    ul {{ margin: 0; padding-left: 18px; }}
+    pre {{ margin: 0; white-space: pre-wrap; word-break: break-word; }}
+    select, button {{ font: inherit; padding: 10px 14px; border-radius: 14px; border: 1px solid rgba(193, 153, 92, 0.36); background: #fffaf1; }}
+    .controls {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <h1>Law Hint Suggestions</h1>
+      <p>추천은 runtime 힌트가 아니라 진단 큐입니다. 무엇이 실패했고, 왜 추천이 떴으며, 승인하면 실제로 어떤 효과가 생기는지 구분해서 보여줍니다.</p>
+    </div>
+    <div class="summary-grid">{summary_cards}</div>
+    <div class="panel">
+      <div class="controls">
+        <label for="status">상태 필터</label>
+        <select id="status" onchange="location.href='?status=' + (this.value === 'all' ? '' : this.value) + '&view=html'">
+          {status_options}
+        </select>
+        <button onclick="location.reload()">새로고침</button>
+      </div>
+    </div>
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>상태</th>
+            <th>유형</th>
+            <th>사유코드</th>
+            <th>질문요약</th>
+            <th>질문기준법령군</th>
+            <th>보완법령</th>
+            <th>보완조문</th>
+            <th>추천보강유형</th>
+            <th>runtime-safe</th>
+            <th>최근갱신</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows) or '<tr><td colspan="10">표시할 추천이 없습니다.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>"""
 
 
 def _bool_label(value: bool) -> str:
@@ -606,6 +1036,7 @@ def render_log_html(
 class PipelineHttpHandler(BaseHTTPRequestHandler):
     _pipeline: Optional[RequestPipeline] = None
     _logger: Optional[CostLogger] = None
+    _suggestion_store: Optional[LawHintSuggestionStore] = None
 
     @classmethod
     def get_pipeline(cls) -> RequestPipeline:
@@ -618,6 +1049,12 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
         if cls._logger is None:
             cls._logger = CostLogger()
         return cls._logger
+
+    @classmethod
+    def get_suggestion_store(cls) -> LawHintSuggestionStore:
+        if cls._suggestion_store is None:
+            cls._suggestion_store = LawHintSuggestionStore()
+        return cls._suggestion_store
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -665,18 +1102,42 @@ class PipelineHttpHandler(BaseHTTPRequestHandler):
                 return
 
         if parsed.path == "/suggestions/law-hints":
-            status = parse_qs(parsed.query).get("status", [None])[0]
-            suggestions = self.get_pipeline().suggestion_store.list_suggestions(status=status)
-            _json_response(
-                self,
-                200,
-                {
+            try:
+                query = parse_qs(parsed.query)
+                status = query.get("status", [None])[0]
+                if status == "all":
+                    status = None
+                view = parse_suggestion_view(self.path)
+                suggestion_store = self.get_suggestion_store()
+                suggestions = suggestion_store.list_suggestions(status=status)
+                override_rules = suggestion_store.active_override_rules()
+                summary = summarize_suggestions(suggestions)
+                if view == "html":
+                    _html_response(
+                        self,
+                        200,
+                        render_suggestion_html(
+                            suggestions,
+                            override_rule_count=len(override_rules),
+                            status=status,
+                        ),
+                    )
+                    return
+
+                payload: Dict[str, Any] = {
                     "count": len(suggestions),
+                    "summary": summary,
                     "items": [asdict(item) for item in suggestions],
-                    "approved_overrides": self.get_pipeline().suggestion_store.approved_overrides(),
-                },
-            )
-            return
+                    "override_rules": [asdict(item) for item in override_rules],
+                }
+                if view == "readable":
+                    payload["descriptions"] = suggestion_field_descriptions()
+                    payload["readable_items"] = [to_readable_suggestion_item(item) for item in suggestions]
+                _json_response(self, 200, payload)
+                return
+            except ValueError as exc:
+                _json_response(self, 400, {"error": str(exc)})
+                return
 
         _json_response(self, 404, {"error": "not_found"})
 

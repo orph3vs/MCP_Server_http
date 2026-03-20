@@ -673,6 +673,7 @@ class RequestPipelineTests(unittest.TestCase):
             suggestion_store = LawHintSuggestionStore(
                 suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
                 overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
             )
             pipeline = RequestPipeline(
                 law_api=FakeLawApiEmpty(),
@@ -700,6 +701,7 @@ class RequestPipelineTests(unittest.TestCase):
             suggestion_store = LawHintSuggestionStore(
                 suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
                 overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
             )
             pipeline = RequestPipeline(
                 law_api=FakeLawApiEmpty(),
@@ -722,6 +724,7 @@ class RequestPipelineTests(unittest.TestCase):
             suggestion_store = LawHintSuggestionStore(
                 suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
                 overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
             )
             suggestion = suggestion_store.create_or_update_suggestion(
                 request_id="req-1",
@@ -922,6 +925,212 @@ class RequestPipelineTests(unittest.TestCase):
         )
 
         self.assertIn("개인정보 보호법", queries)
+
+    def test_error_suggestion_records_reason_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            suggestion_store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+            )
+            pipeline = RequestPipeline(
+                law_api=FakeLawApiEmpty(),
+                logger=logger,
+                suggestion_store=suggestion_store,
+            )
+
+            result = pipeline.process(PipelineRequest(user_query="테스트"))
+
+            self.assertIsNotNone(result.error)
+            suggestions = suggestion_store.list_suggestions()
+            self.assertEqual(len(suggestions), 1)
+            self.assertEqual(suggestions[0].suggestion_type, "law_search_gap")
+            self.assertEqual(suggestions[0].reason_code, "empty_law_data")
+
+    def test_approved_law_hint_override_is_used_for_official_query_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            suggestion_store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+            )
+            suggestion = suggestion_store.create_or_update_suggestion(
+                request_id="req-2",
+                question_summary="가명처리 기준",
+                user_query="가명처리 기준이 궁금해",
+                question_intent="explain",
+                related_law_queries=["개인정보 보호법"],
+                issue_terms=["개인정보"],
+                search_queries=["개인정보 보호법 가명처리"],
+                proposed_keywords=["가명처리"],
+            )
+            suggestion_store.approve_suggestion(
+                suggestion.id,
+                law_name="개인정보 보호법",
+                keywords=["가명처리"],
+            )
+            pipeline = RequestPipeline(
+                law_api=FakeLawApiOk(),
+                logger=logger,
+                suggestion_store=suggestion_store,
+            )
+
+            queries = pipeline._resolve_official_law_queries("가명처리 기준을 설명해줘", [])
+
+            self.assertIn("개인정보 보호법", queries)
+
+    def test_process_records_question_scope_gap_suggestion_when_related_basis_is_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+            suggestion_store = LawHintSuggestionStore(
+                suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+                overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+            )
+            law_api = FakeLawApiSchoolYouth()
+            pipeline = RequestPipeline(
+                law_api=law_api,
+                logger=logger,
+                suggestion_store=suggestion_store,
+            )
+
+            result = pipeline.process(
+                PipelineRequest(
+                    user_query="학교 밖 청소년 지원에 관한 법률에 근거해서 주민등록번호를 수집할 수 있는가",
+                    context="기준시점: 2026-03-18",
+                )
+            )
+
+            self.assertIsNone(result.error)
+            suggestions = suggestion_store.list_suggestions()
+            self.assertEqual(len(suggestions), 1, result.citations["law_context"])
+            self.assertEqual(suggestions[0].suggestion_type, "question_scope_gap")
+            self.assertEqual(suggestions[0].reason_code, "question_scope_missing_direct_basis")
+            self.assertIn("학교 밖 청소년", suggestions[0].question_law_family or "")
+            self.assertFalse(suggestions[0].question_scope_direct_basis_found)
+            self.assertTrue(suggestions[0].supplementary_law_name)
+def _patched_test_approved_law_hint_override_is_used_for_related_queries(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        suggestion_store = LawHintSuggestionStore(
+            suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+            overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+        )
+        suggestion_store.create_override_rule(
+            rule_type="law_family_priority",
+            name="Prefer Example Tax Law",
+            conditions={"trigger_phrases": ["instructor fee"]},
+            action={"law_name": "Example Tax Law"},
+        )
+        pipeline = RequestPipeline(
+            law_api=FakeLawApiOk(),
+            logger=logger,
+            suggestion_store=suggestion_store,
+        )
+
+        queries = pipeline._resolved_related_law_queries("How does instructor fee withholding work?")
+
+        self.assertIn("Example Tax Law", queries)
+
+
+def _patched_test_error_suggestion_records_reason_code(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        suggestion_store = LawHintSuggestionStore(
+            suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+            overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+        )
+        pipeline = RequestPipeline(
+            law_api=FakeLawApiEmpty(),
+            logger=logger,
+            suggestion_store=suggestion_store,
+        )
+
+        result = pipeline.process(PipelineRequest(user_query="test"))
+
+        self.assertIsNotNone(result.error)
+        suggestions = suggestion_store.list_suggestions()
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].suggestion_type, "law_search_gap")
+        self.assertEqual(suggestions[0].reason_code, "empty_law_data")
+        self.assertEqual(suggestions[0].recommended_change_type, "law_search_gap_review")
+        self.assertFalse(suggestions[0].runtime_safe)
+        self.assertTrue(suggestions[0].approval_effect)
+
+
+def _patched_test_approved_law_hint_override_is_used_for_official_query_resolution(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        suggestion_store = LawHintSuggestionStore(
+            suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+            overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+        )
+        suggestion_store.create_override_rule(
+            rule_type="alias_normalization",
+            name="Alias -> Personal Information Protection Act",
+            conditions={"trigger_phrases": ["pipa"]},
+            action={"law_name": "Personal Information Protection Act"},
+        )
+        pipeline = RequestPipeline(
+            law_api=FakeLawApiOk(),
+            logger=logger,
+            suggestion_store=suggestion_store,
+        )
+
+        queries = pipeline._resolve_official_law_queries("Explain pipa masking", [])
+
+        self.assertIn("Personal Information Protection Act", queries)
+
+
+def _patched_test_process_records_question_scope_gap_suggestion_when_related_basis_is_used(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        suggestion_store = LawHintSuggestionStore(
+            suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+            overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+        )
+        law_api = FakeLawApiSchoolYouth()
+        pipeline = RequestPipeline(
+            law_api=law_api,
+            logger=logger,
+            suggestion_store=suggestion_store,
+        )
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="학교 밖 청소년 지원에 관한 법률에 근거해서 주민등록번호를 수집할 수 있는가",
+                context="기준시점: 2026-03-18",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        suggestions = suggestion_store.list_suggestions()
+        self.assertEqual(len(suggestions), 1, result.citations["law_context"])
+        self.assertEqual(suggestions[0].suggestion_type, "question_scope_gap")
+        self.assertEqual(suggestions[0].reason_code, "question_scope_missing_direct_basis")
+        self.assertIn("학교 밖 청소년", suggestions[0].question_law_family or "")
+        self.assertFalse(suggestions[0].question_scope_direct_basis_found)
+        self.assertTrue(suggestions[0].supplementary_law_name)
+        self.assertEqual(suggestions[0].recommended_change_type, "decree_title_priority_review")
+        self.assertFalse(suggestions[0].runtime_safe)
+        self.assertTrue(suggestions[0].approval_effect)
+        self.assertEqual(
+            (suggestions[0].recommended_change_payload or {}).get("question_law_family"),
+            suggestions[0].question_law_family,
+        )
+
+
+RequestPipelineTests.test_approved_law_hint_override_is_used_for_related_queries = _patched_test_approved_law_hint_override_is_used_for_related_queries
+RequestPipelineTests.test_error_suggestion_records_reason_code = _patched_test_error_suggestion_records_reason_code
+RequestPipelineTests.test_approved_law_hint_override_is_used_for_official_query_resolution = _patched_test_approved_law_hint_override_is_used_for_official_query_resolution
+RequestPipelineTests.test_process_records_question_scope_gap_suggestion_when_related_basis_is_used = _patched_test_process_records_question_scope_gap_suggestion_when_related_basis_is_used
+
 
 if __name__ == "__main__":
     unittest.main()

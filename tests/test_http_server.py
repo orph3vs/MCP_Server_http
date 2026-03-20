@@ -10,13 +10,17 @@ from src.http_server import (
     parse_recent_limit,
     parse_recent_page,
     parse_recent_view,
+    parse_suggestion_view,
     parse_tool_request,
     render_log_html,
     render_log_table,
+    render_suggestion_html,
+    summarize_suggestions,
     to_readable_log_item,
+    to_readable_suggestion_item,
     to_readable_summary,
 )
-from src.law_hint_suggestions import LawHintSuggestionStore
+from src.law_hint_suggestions import LawHintSuggestion, LawHintSuggestionStore
 
 
 class HttpServerParsingTests(unittest.TestCase):
@@ -87,6 +91,19 @@ class HttpServerParsingTests(unittest.TestCase):
         self.assertEqual(parse_recent_view("/logs/recent?view=table"), "table")
         self.assertEqual(parse_recent_view("/logs/recent?view=html"), "html")
 
+    def test_parse_suggestion_view(self):
+        self.assertEqual(parse_suggestion_view("/suggestions/law-hints"), "raw")
+        self.assertEqual(
+            parse_suggestion_view("/suggestions/law-hints?view=readable"),
+            "readable",
+        )
+        self.assertEqual(
+            parse_suggestion_view("/suggestions/law-hints?view=html"),
+            "html",
+        )
+        with self.assertRaises(ValueError):
+            parse_suggestion_view("/suggestions/law-hints?view=table")
+
     def test_get_logger_does_not_require_pipeline_initialization(self):
         original_pipeline = PipelineHttpHandler._pipeline
         original_logger = PipelineHttpHandler._logger
@@ -99,6 +116,19 @@ class HttpServerParsingTests(unittest.TestCase):
         finally:
             PipelineHttpHandler._pipeline = original_pipeline
             PipelineHttpHandler._logger = original_logger
+
+    def test_get_suggestion_store_does_not_require_pipeline_initialization(self):
+        original_pipeline = PipelineHttpHandler._pipeline
+        original_store = PipelineHttpHandler._suggestion_store
+        try:
+            PipelineHttpHandler._pipeline = None
+            PipelineHttpHandler._suggestion_store = None
+            store = PipelineHttpHandler.get_suggestion_store()
+            self.assertIsNotNone(store)
+            self.assertIsNone(PipelineHttpHandler._pipeline)
+        finally:
+            PipelineHttpHandler._pipeline = original_pipeline
+            PipelineHttpHandler._suggestion_store = original_store
 
     def test_to_readable_log_item(self):
         item = to_readable_log_item(
@@ -334,11 +364,88 @@ class HttpServerParsingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_ask_request(b"{bad-json")
 
+    def test_to_readable_suggestion_item_and_summary(self):
+        suggestion = LawHintSuggestion(
+            id="s1",
+            fingerprint="fp1",
+            request_id="req-1",
+            question_summary="Need decree basis",
+            user_query="Can this agency collect an identifier?",
+            question_intent="applicability",
+            related_law_queries=["Example Decree"],
+            issue_terms=["identifier"],
+            search_queries=["example decree identifier"],
+            proposed_keywords=["example", "identifier"],
+            status="pending",
+            occurrence_count=3,
+            created_at="2026-03-20T00:00:00+00:00",
+            updated_at="2026-03-20T01:00:00+00:00",
+            suggestion_type="question_scope_gap",
+            reason_code="question_scope_missing_direct_basis",
+            question_law_family="Example Law",
+            question_scope_direct_basis_found=False,
+            question_scope_article_no="제10조",
+            supplementary_law_name="Example Decree",
+            supplementary_article_no="제14조",
+            matched_clause_labels=["제14조 제1호", "제14조 제2호"],
+        )
+        item = to_readable_suggestion_item(suggestion)
+        self.assertEqual(item["유형"], "question_scope_gap")
+        self.assertEqual(item["사유코드"], "question_scope_missing_direct_basis")
+        self.assertEqual(item["보완법령"], "Example Decree")
+        self.assertEqual(item["직접관련항목"], ["제14조 제1호", "제14조 제2호"])
+
+        summary = summarize_suggestions([suggestion])
+        self.assertEqual(summary["count"], 1)
+        self.assertEqual(summary["pending_count"], 1)
+        self.assertEqual(summary["question_scope_gap_count"], 1)
+
+    def test_render_suggestion_html(self):
+        suggestion = LawHintSuggestion(
+            id="s1",
+            fingerprint="fp1",
+            request_id="req-1",
+            question_summary="Need decree basis",
+            user_query="Can this agency collect an identifier?",
+            question_intent="applicability",
+            related_law_queries=["Example Decree"],
+            issue_terms=["identifier"],
+            search_queries=["example decree identifier"],
+            proposed_keywords=["example", "identifier"],
+            status="approved",
+            occurrence_count=2,
+            created_at="2026-03-20T00:00:00+00:00",
+            updated_at="2026-03-20T01:00:00+00:00",
+            suggestion_type="question_scope_gap",
+            reason_code="question_scope_missing_direct_basis",
+            question_law_family="Example Law",
+            question_scope_direct_basis_found=False,
+            question_scope_article_no="제10조",
+            supplementary_law_name="Example Decree",
+            supplementary_article_no="제14조",
+            matched_clause_labels=["제14조 제1호"],
+            approved_law_name="Example Decree",
+            approved_keywords=["example", "identifier"],
+        )
+        html_doc = render_suggestion_html(
+            [suggestion],
+            approved_overrides={"Example Decree": ["example", "identifier"]},
+            status="approved",
+        )
+        self.assertIn("<!doctype html>", html_doc.lower())
+        self.assertIn("Law Hint Suggestions", html_doc)
+        self.assertIn("question_scope_gap", html_doc)
+        self.assertIn("question_scope_missing_direct_basis", html_doc)
+        self.assertIn("Example Decree", html_doc)
+        self.assertIn("제14조 제1호", html_doc)
+        self.assertIn('option value="approved" selected', html_doc)
+
     def test_law_hint_suggestion_store_approve_flow(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = LawHintSuggestionStore(
                 suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
                 overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+                rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
             )
             suggestion = store.create_or_update_suggestion(
                 request_id="req-1",
@@ -355,6 +462,138 @@ class HttpServerParsingTests(unittest.TestCase):
 
             self.assertEqual(approved.status, "approved")
             self.assertEqual(store.approved_overrides()["도서관법"], ["도서관", "출석부"])
+
+def _patched_test_to_readable_suggestion_item_and_summary(self):
+    suggestion = LawHintSuggestion(
+        id="s1",
+        fingerprint="fp1",
+        request_id="req-1",
+        question_summary="Need decree basis",
+        user_query="Can this agency collect an identifier?",
+        question_intent="applicability",
+        related_law_queries=["Example Decree"],
+        issue_terms=["identifier"],
+        search_queries=["example decree identifier"],
+        proposed_keywords=["example", "identifier"],
+        status="pending",
+        occurrence_count=3,
+        created_at="2026-03-20T00:00:00+00:00",
+        updated_at="2026-03-20T01:00:00+00:00",
+        suggestion_type="question_scope_gap",
+        reason_code="question_scope_missing_direct_basis",
+        question_law_family="Example Law",
+        question_scope_direct_basis_found=False,
+        question_scope_article_no="제10조",
+        supplementary_law_name="Example Decree",
+        supplementary_article_no="제14조",
+        matched_clause_labels=["제14조 제1호", "제14조 제2호"],
+        recommended_change_type="decree_title_priority_review",
+        recommended_change_payload={"law_name": "Example Decree", "article_no": "제14조"},
+        runtime_safe=False,
+        approval_effect="review decree title priority before adding a runtime rule",
+    )
+
+    item = to_readable_suggestion_item(suggestion)
+    readable_json = json.dumps(item, ensure_ascii=False)
+    self.assertIn("question_scope_gap", readable_json)
+    self.assertIn("question_scope_missing_direct_basis", readable_json)
+    self.assertIn("Example Decree", readable_json)
+    self.assertIn("제14조 제1호", readable_json)
+    self.assertIn("decree_title_priority_review", readable_json)
+
+    summary = summarize_suggestions([suggestion])
+    self.assertEqual(summary["count"], 1)
+    self.assertEqual(summary["pending_count"], 1)
+    self.assertEqual(summary["question_scope_gap_count"], 1)
+    self.assertEqual(summary["runtime_safe_count"], 0)
+
+
+def _patched_test_render_suggestion_html(self):
+    suggestion = LawHintSuggestion(
+        id="s1",
+        fingerprint="fp1",
+        request_id="req-1",
+        question_summary="Need decree basis",
+        user_query="Can this agency collect an identifier?",
+        question_intent="applicability",
+        related_law_queries=["Example Decree"],
+        issue_terms=["identifier"],
+        search_queries=["example decree identifier"],
+        proposed_keywords=["example", "identifier"],
+        status="approved",
+        occurrence_count=2,
+        created_at="2026-03-20T00:00:00+00:00",
+        updated_at="2026-03-20T01:00:00+00:00",
+        suggestion_type="question_scope_gap",
+        reason_code="question_scope_missing_direct_basis",
+        question_law_family="Example Law",
+        question_scope_direct_basis_found=False,
+        question_scope_article_no="제10조",
+        supplementary_law_name="Example Decree",
+        supplementary_article_no="제14조",
+        matched_clause_labels=["제14조 제1호"],
+        recommended_change_type="decree_title_priority_review",
+        recommended_change_payload={"law_name": "Example Decree", "article_no": "제14조"},
+        runtime_safe=False,
+        approval_effect="operator review recorded; no runtime override created",
+        approved_rule_type="decree_title_priority_review",
+        approved_rule_id="rule-1",
+    )
+
+    html_doc = render_suggestion_html(
+        [suggestion],
+        override_rule_count=1,
+        status="approved",
+    )
+    self.assertIn("<!doctype html>", html_doc.lower())
+    self.assertIn("Law Hint Suggestions", html_doc)
+    self.assertIn("question_scope_gap", html_doc)
+    self.assertIn("question_scope_missing_direct_basis", html_doc)
+    self.assertIn("Example Decree", html_doc)
+    self.assertIn("제14조 제1호", html_doc)
+    self.assertIn("decree_title_priority_review", html_doc)
+    self.assertIn("runtime-safe", html_doc)
+    self.assertIn('option value="approved" selected', html_doc)
+
+
+def _patched_test_law_hint_suggestion_store_approve_flow(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        store = LawHintSuggestionStore(
+            suggestions_path=str(Path(tmp) / "law_hint_suggestions.json"),
+            overrides_path=str(Path(tmp) / "law_hint_overrides.json"),
+            rules_path=str(Path(tmp) / "law_hint_override_rules.json"),
+        )
+        suggestion = store.create_or_update_suggestion(
+            request_id="req-1",
+            question_summary="Need decree review",
+            user_query="Need decree review",
+            question_intent="explain",
+            related_law_queries=["Example Law"],
+            issue_terms=["identifier"],
+            search_queries=["example law identifier"],
+            proposed_keywords=["example", "identifier"],
+            suggestion_type="question_scope_gap",
+            reason_code="question_scope_missing_direct_basis",
+            recommended_change_type="decree_title_priority_review",
+            recommended_change_payload={"law_name": "Example Decree", "article_no": "제14조"},
+            runtime_safe=False,
+            approval_effect="review decree title priority before adding a runtime rule",
+        )
+
+        approved = store.approve_suggestion(suggestion.id)
+
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(store.active_override_rules(), [])
+        self.assertIsNone(approved.approved_rule_id)
+        self.assertEqual(
+            approved.approval_effect,
+            "review decree title priority before adding a runtime rule",
+        )
+
+
+HttpServerParsingTests.test_to_readable_suggestion_item_and_summary = _patched_test_to_readable_suggestion_item_and_summary
+HttpServerParsingTests.test_render_suggestion_html = _patched_test_render_suggestion_html
+HttpServerParsingTests.test_law_hint_suggestion_store_approve_flow = _patched_test_law_hint_suggestion_store_approve_flow
 
 
 if __name__ == "__main__":

@@ -566,7 +566,15 @@ class RequestPipeline:
         if not hasattr(self.law_api, "search_law"):
             return []
 
-        candidates = self._candidate_law_references(user_query)
+        candidates = self._matched_runtime_override_law_names(user_query) + self._candidate_law_references(user_query)
+        deduped_candidates: List[str] = []
+        seen_candidates = set()
+        for candidate in candidates:
+            cleaned = self._clean_text(candidate)
+            if cleaned and cleaned not in seen_candidates:
+                seen_candidates.add(cleaned)
+                deduped_candidates.append(cleaned)
+        candidates = deduped_candidates
         if not candidates:
             return []
 
@@ -910,11 +918,7 @@ class RequestPipeline:
         return filtered[:8]
 
     def _resolved_related_law_queries(self, user_query: str) -> List[str]:
-        queries = self._related_law_queries(user_query)
-        normalized = self._clean_text(user_query).lower()
-        for law_name, hints in self.suggestion_store.approved_overrides().items():
-            if any(hint.lower() in normalized for hint in hints):
-                queries.append(law_name)
+        queries = self._matched_runtime_override_law_names(user_query) + self._related_law_queries(user_query)
         deduped: List[str] = []
         seen = set()
         for query in queries:
@@ -922,6 +926,122 @@ class RequestPipeline:
                 seen.add(query)
                 deduped.append(query)
         return deduped
+
+    def _matched_runtime_override_law_names(self, user_query: str) -> List[str]:
+        normalized = self._clean_text(user_query).lower()
+        question_intent = self._question_intent(user_query)
+        issue_terms = {term.lower() for term in self._extract_issue_query_terms(user_query)}
+        matched: List[str] = []
+        for rule in self.suggestion_store.active_override_rules():
+            if rule.rule_type not in {"alias_normalization", "law_family_priority"}:
+                continue
+            conditions = rule.conditions or {}
+            trigger_phrases = [
+                self._clean_text(str(phrase)).lower()
+                for phrase in conditions.get("trigger_phrases", [])
+                if self._clean_text(str(phrase))
+            ]
+            if trigger_phrases and not any(phrase in normalized for phrase in trigger_phrases):
+                continue
+
+            required_intent = self._clean_text(str(conditions.get("question_intent") or "")).lower()
+            if required_intent and required_intent != question_intent.lower():
+                continue
+
+            required_issue_terms = {
+                self._clean_text(str(term)).lower()
+                for term in conditions.get("issue_terms", [])
+                if self._clean_text(str(term))
+            }
+            if required_issue_terms and not required_issue_terms.issubset(issue_terms):
+                continue
+
+            law_name = self._clean_text(str(rule.action.get("law_name") or ""))
+            if law_name:
+                matched.append(law_name)
+
+        deduped: List[str] = []
+        seen = set()
+        for law_name in matched:
+            if law_name and law_name not in seen:
+                seen.add(law_name)
+                deduped.append(law_name)
+        return deduped
+
+    def _recommend_law_hint_change(
+        self,
+        *,
+        req: PipelineRequest,
+        analysis: LawSearchAnalysis,
+        suggestion_type: str,
+        reason_code: Optional[str],
+        question_law_scope: Optional[Dict[str, Any]] = None,
+        supplementary_primary_law: Optional[Dict[str, Any]] = None,
+        supplementary_article: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Optional[str], Dict[str, Any], bool, str]:
+        question_law_family = self._clean_text(str((question_law_scope or {}).get("target_law_family") or ""))
+        supplementary_law_name = self._clean_text(str((supplementary_primary_law or {}).get("law_name") or ""))
+        supplementary_article_no = self._clean_text(str((supplementary_article or {}).get("article_no") or ""))
+        matched_clause_labels = self._matched_clause_labels(supplementary_article)
+
+        if suggestion_type == "question_scope_gap":
+            if self._is_sensitive_identifier_question(req.user_query):
+                return (
+                    "decree_title_priority_review",
+                    {
+                        "question_law_family": question_law_family,
+                        "supplementary_law_name": supplementary_law_name,
+                        "supplementary_article_no": supplementary_article_no,
+                        "matched_clause_labels": matched_clause_labels,
+                        "issue_terms": list(analysis.issue_terms),
+                    },
+                    False,
+                    "질문 기준 법령군과 보완 법령군이 갈렸습니다. 시행령/조문 우선순위 또는 답변 정책 검토가 필요합니다.",
+                )
+            return (
+                "question_scope_policy_review",
+                {
+                    "question_law_family": question_law_family,
+                    "supplementary_law_name": supplementary_law_name,
+                    "supplementary_article_no": supplementary_article_no,
+                },
+                False,
+                "질문 기준 법령과 관련 법령의 결과가 분리되어 설명 정책 검토가 필요합니다.",
+            )
+
+        if reason_code == "empty_law_data":
+            explicit_law_reference = self._clean_text(self._explicit_law_reference(req.user_query) or "")
+            candidate_refs = self._candidate_law_references(req.user_query)
+            if explicit_law_reference and candidate_refs and explicit_law_reference not in candidate_refs:
+                return (
+                    "alias_normalization_review",
+                    {
+                        "explicit_law_reference": explicit_law_reference,
+                        "candidate_law_references": candidate_refs[:4],
+                    },
+                    False,
+                    "질문의 법령 표현이 검색에서 안정적으로 정규화되지 않았습니다. alias 검토가 필요합니다.",
+                )
+            return (
+                "law_search_gap_review",
+                {
+                    "candidate_law_references": candidate_refs[:4],
+                    "issue_terms": list(analysis.issue_terms),
+                    "search_queries": list(analysis.search_queries[:8]),
+                },
+                False,
+                "법령 grounding 자체가 비어 있어 검색 규칙 또는 법령명 정규화 검토가 필요합니다.",
+            )
+
+        return (
+            "manual_review",
+            {
+                "issue_terms": list(analysis.issue_terms),
+                "search_queries": list(analysis.search_queries[:8]),
+            },
+            False,
+            "운영자 검토가 필요합니다.",
+        )
 
     def _analyze_law_search(self, user_query: str) -> LawSearchAnalysis:
         issue_terms = self._extract_issue_query_terms(user_query)
@@ -946,18 +1066,111 @@ class RequestPipeline:
         req: PipelineRequest,
         analysis: LawSearchAnalysis,
         question_summary: str,
+        suggestion_type: str = "law_search_gap",
+        reason_code: Optional[str] = None,
+        question_law_scope: Optional[Dict[str, Any]] = None,
+        supplementary_primary_law: Optional[Dict[str, Any]] = None,
+        supplementary_article: Optional[Dict[str, Any]] = None,
     ) -> None:
-        if analysis.related_law_queries or analysis.issue_terms or analysis.proposed_keywords:
+        related_law_queries = list(analysis.related_law_queries)
+        issue_terms = list(analysis.issue_terms)
+        search_queries = list(analysis.search_queries)
+        proposed_keywords = list(analysis.proposed_keywords)
+
+        supplementary_law_name = ""
+        supplementary_article_no = ""
+        matched_clause_labels: List[str] = []
+        question_law_family = None
+        question_scope_direct_basis_found = None
+        question_scope_article_no = None
+
+        if question_law_scope:
+            question_law_family = question_law_scope.get("target_law_family")
+            question_scope_direct_basis_found = question_law_scope.get("direct_basis_found")
+            question_scope_article = question_law_scope.get("article") or {}
+            question_scope_article_no = question_scope_article.get("article_no")
+
+        if supplementary_primary_law:
+            supplementary_law_name = self._clean_text(str(supplementary_primary_law.get("law_name") or ""))
+            if supplementary_law_name and supplementary_law_name not in related_law_queries:
+                related_law_queries.append(supplementary_law_name)
+
+        if supplementary_article:
+            supplementary_article_no = self._clean_text(str(supplementary_article.get("article_no") or ""))
+            matched_clause_labels = self._matched_clause_labels(supplementary_article)
+            proposed_keywords.extend(matched_clause_labels)
+
+        (
+            recommended_change_type,
+            recommended_change_payload,
+            runtime_safe,
+            approval_effect,
+        ) = self._recommend_law_hint_change(
+            req=req,
+            analysis=analysis,
+            suggestion_type=suggestion_type,
+            reason_code=reason_code,
+            question_law_scope=question_law_scope,
+            supplementary_primary_law=supplementary_primary_law,
+            supplementary_article=supplementary_article,
+        )
+
+        if (
+            related_law_queries
+            or issue_terms
+            or proposed_keywords
+            or question_law_family
+            or supplementary_law_name
+            or reason_code
+        ):
             self.suggestion_store.create_or_update_suggestion(
                 request_id=request_id,
                 question_summary=question_summary,
                 user_query=req.user_query,
                 question_intent=analysis.question_intent,
-                related_law_queries=analysis.related_law_queries,
-                issue_terms=analysis.issue_terms,
-                search_queries=analysis.search_queries,
-                proposed_keywords=analysis.proposed_keywords,
+                related_law_queries=related_law_queries,
+                issue_terms=issue_terms,
+                search_queries=search_queries,
+                proposed_keywords=proposed_keywords,
+                suggestion_type=suggestion_type,
+                reason_code=reason_code,
+                question_law_family=question_law_family,
+                question_scope_direct_basis_found=question_scope_direct_basis_found,
+                question_scope_article_no=question_scope_article_no,
+                supplementary_law_name=supplementary_law_name or None,
+                supplementary_article_no=supplementary_article_no or None,
+                matched_clause_labels=matched_clause_labels,
+                recommended_change_type=recommended_change_type,
+                recommended_change_payload=recommended_change_payload,
+                runtime_safe=runtime_safe,
+                approval_effect=approval_effect,
             )
+
+    @classmethod
+    def _matched_clause_labels(cls, article: Optional[Dict[str, Any]]) -> List[str]:
+        if not isinstance(article, dict):
+            return []
+
+        labels: List[str] = []
+        for clause in article.get("matched_clauses") or []:
+            if not isinstance(clause, dict):
+                continue
+            label = cls._clean_text(str(clause.get("article_no") or ""))
+            if label:
+                labels.append(label)
+
+        if not labels:
+            article_no = cls._clean_text(str(article.get("article_no") or ""))
+            if article_no:
+                labels.append(article_no)
+
+        deduped: List[str] = []
+        seen = set()
+        for label in labels:
+            if label and label not in seen:
+                seen.add(label)
+                deduped.append(label)
+        return deduped
 
     @staticmethod
     def _extract_article_numbers(question: str) -> List[str]:
@@ -2008,6 +2221,55 @@ class RequestPipeline:
             law_enrichment["related_law_queries"] = related_law_queries
             law_enrichment["used_search_query"] = used_search_query
             law_enrichment["prompt_policy"] = prompt_policy.as_dict()
+            explicit_question_law = self._explicit_law_reference(req.user_query)
+            question_law_scope = law_enrichment.get("question_law_scope") or {}
+            if not question_law_scope and explicit_question_law:
+                question_law_scope = {
+                    "target_law_family": self._law_family_name(explicit_question_law),
+                    "direct_basis_found": False,
+                }
+            question_scope_family = self._law_family_name(str(question_law_scope.get("target_law_family") or ""))
+            supplementary_primary_law = law_enrichment.get("primary_law") or {}
+            supplementary_article = law_enrichment.get("article") or {}
+            supplementary_related_laws = []
+            for item in law_enrichment.get("related_laws") or []:
+                if not isinstance(item, dict):
+                    continue
+                law_name = self._clean_text(str(item.get("law_name") or ""))
+                if not law_name:
+                    continue
+                if question_scope_family and self._law_family_name(law_name) == question_scope_family:
+                    continue
+                supplementary_related_laws.append(item)
+
+            if (
+                (not supplementary_article.get("article_no"))
+                and supplementary_related_laws
+                and (
+                    not supplementary_primary_law
+                    or (
+                        question_scope_family
+                        and self._law_family_name(str(supplementary_primary_law.get("law_name") or "")) == question_scope_family
+                    )
+                )
+            ):
+                supplementary_primary_law = supplementary_related_laws[0]
+            if (
+                question_law_scope
+                and not question_law_scope.get("direct_basis_found")
+                and (supplementary_article.get("article_no") or supplementary_related_laws)
+            ):
+                self._record_law_hint_suggestion(
+                    request_id=request_id,
+                    req=req,
+                    analysis=search_analysis,
+                    question_summary=question_summary,
+                    suggestion_type="question_scope_gap",
+                    reason_code="question_scope_missing_direct_basis",
+                    question_law_scope=question_law_scope,
+                    supplementary_primary_law=supplementary_primary_law,
+                    supplementary_article=supplementary_article,
+                )
             enriched_context = self._merge_context(req.context, self._law_context_lines(law_enrichment))
 
             agent_result = self.agent_engine.run(
@@ -2093,6 +2355,8 @@ class RequestPipeline:
                     req=req,
                     analysis=search_analysis,
                     question_summary=question_summary,
+                    suggestion_type="law_search_gap",
+                    reason_code="empty_law_data",
                 )
             latency = round((time.perf_counter() - started) * 1000, 3)
             cost = self._estimate_cost(tokens_in=tokens_in, tokens_out=tokens_out)
