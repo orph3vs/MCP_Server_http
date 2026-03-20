@@ -1,50 +1,57 @@
 # MyMCPServer
 
-국가법령정보센터 API 기반 MCP 서버 프로젝트입니다.
+국가법령정보센터 API 기반 MCP 법률 판단 보조 서버입니다.
+
+이 프로젝트는 법령을 단순 검색하는 수준이 아니라, 질문에 맞는 본법/시행령/시행규칙/관련 법령을 따라가며 근거 조문을 찾아 MCP 도구 형태로 반환합니다.
 
 ## 문서 안내
-- 전체 구조 설계: `docs/nlic-mcp-architecture.md`
-- Multi-Agent Review: `docs/multi-agent-review.md`
-- NLIC API Wrapper: `docs/nlic-api-wrapper.md`
-- Confidence Scoring: `docs/confidence-scoring.md`
-- Cost Logging: `docs/cost-logging.md`
-- Request Pipeline: `docs/request-pipeline.md`
-- MCP Tool Contract: `docs/mcp-tool-contract.md`
-- 실행 체크리스트: `docs/execution-checklist.md`
+- 실행/운영 체크리스트: `docs/execution-checklist.md`
+- MCP 도구 계약: `docs/mcp-tool-contract.md`
+- Request pipeline: `docs/request-pipeline.md`
+- NLIC API wrapper: `docs/nlic-api-wrapper.md`
+- 비용/로그 구조: `docs/cost-logging.md`
+- 아키텍처 개요: `docs/nlic-mcp-architecture.md`
 
-## Prompt 구성
-- `config/prompts/manifest.json`: 프롬프트 버전 매니페스트
-- `config/prompts/<version>/system_prompt.md`
-- `config/prompts/<version>/orchestration_prompt.md`
-- `src/prompt_loader.py`: 요청마다 자동 결합하는 로더 모듈
-- `src/risk_classifier.py`: 질문 위험도(HIGH/LOW) 점수 기반 분기 모듈
-- `src/multi_agent_review.py`: 요약→병렬분석→통합 Multi-Agent Review 파이프라인
-- `src/nlic_api_wrapper.py`: 국가법령정보센터 API wrapper(search_law/get_article/get_version/validate_article + cache)
-- `src/confidence_scoring.py`: 답변 신뢰도 점수(100점 만점) 자동 계산 엔진
-- `src/cost_logger.py`: 요청 비용 로그(SQLite) 저장 모듈
-- `src/request_pipeline.py`: 전체 요청 흐름(User→...→Response) 오케스트레이션 파이프라인
-- `src/http_server.py`: RequestPipeline HTTP 엔드포인트(`/health`, `/ask`)
-- `src/mcp_stdio_server.py`: MCP JSON-RPC core (`initialize`, `tools/list`, `tools/call`)
-- `src/mcp_http_server.py`: HTTP transport MCP 서버(`POST /mcp`, `GET /health`)
-- `run_local.py`: 로컬 단건 실행 스크립트
+## 실행 구조
+- `src/mcp_core.py`: stdio/HTTP가 함께 쓰는 MCP JSON-RPC 코어
+- `src/mcp_stdio_server.py`: 로컬 MCP 클라이언트용 stdio transport
+- `src/mcp_http_server.py`: 원격 MCP 클라이언트용 HTTP transport (`POST /mcp`)
+- `src/http_server.py`: 로컬 REST/로그 대시보드 (`127.0.0.1:8000`)
+- `src/request_pipeline.py`: 법령 검색, 관련 법령 확장, 조문 grounding 파이프라인
 
-## Runtime Notes
-- 실행 전 `NLIC_OC` 환경변수를 설정해야 합니다.
-- `src.http_server`는 `127.0.0.1:8000`에서 REST/로그 확인용으로 사용합니다.
-- `src.mcp_stdio_server`는 로컬 MCP 클라이언트의 stdio 연결용으로 사용할 수 있습니다.
-- `src.mcp_http_server`는 `8001` 포트에서 MCP 연결용으로 사용합니다.
-- 외부 공개가 필요할 때는 `ngrok`를 `8001`에만 연결하면 됩니다.
-- 질문 처리 로그는 SQLite `data/cost_logs.db`에 저장되고, `8000`의 `/logs/recent`는 그 DB를 조회하는 화면입니다.
-- stdio와 HTTP는 같은 코어(`RequestPipeline`, `McpServer`)를 공유하므로 필요하면 둘 다 병행해서 사용할 수 있습니다.
+## 빠른 시작
+실행 전 `NLIC_OC` 환경변수를 설정해야 합니다.
 
-- 보안 주의: NLIC OC 값은 공개 문서에 기재하지 마세요.
+### 1. stdio로 로컬 연결
+```bash
+export NLIC_OC="your-oc-value"
+python -m src.mcp_stdio_server
+```
 
-예시:
+### 2. HTTP로 원격 연결
 ```bash
 export NLIC_OC="your-oc-value"
 python -m src.mcp_http_server
 ```
 
-## 진행 방식
-- 본 저장소의 상세 설계/정책/플로우는 README가 아닌 `docs/` 하위 문서에서 관리합니다.
-- 다음 작업은 사용자께서 전달하는 **단계별 프롬프트**를 기준으로 순차 반영합니다.
+- 기본 MCP HTTP 엔드포인트: `http://localhost:8001/mcp`
+- 외부 공개가 필요하면 `ngrok`는 `8001`에만 연결하면 됩니다.
+
+### 3. 로그 대시보드 보기
+```bash
+python -m src.http_server
+```
+
+- 로컬 로그 대시보드: `http://localhost:8000/logs/recent?view=html`
+- 로그 DB: `data/cost_logs.db`
+
+## Runtime Notes
+- `stdio`와 `HTTP`는 같은 코어(`src/mcp_core.py`, `src/request_pipeline.py`)를 공유합니다.
+- `src.http_server`는 `127.0.0.1:8000`에만 바인딩되며, 로그/REST 확인용입니다.
+- 질문 처리 로그는 SQLite `data/cost_logs.db`에 저장되고, `8000` 대시보드는 그 DB를 조회해 보여줍니다.
+- 사용자에게 노출되는 법령/조문 링크는 공개용 `https://www.law.go.kr/법령/...` 형식만 사용합니다.
+
+## 보안 주의
+- `NLIC_OC` 값은 코드나 공개 문서에 직접 적지 마세요.
+- 외부 공개 시에는 `MCP_AUTH_TOKEN` 같은 인증과 HTTPS를 함께 사용하세요.
+
