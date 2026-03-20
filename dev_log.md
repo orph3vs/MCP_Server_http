@@ -6,7 +6,7 @@
 
 ## Current Stable Scope
 - HTTP server for `/ask`, law tools, precedent tools, logs, and hint suggestions.
-- MCP server over HTTP transport exposing:
+- MCP server over stdio/HTTP transports exposing:
   - `ask`
   - `answer_with_citations`
   - `search_law`
@@ -78,7 +78,7 @@
   - `stdio`: local MCP client integration
   - `8000`: REST/log inspection (localhost only)
   - `8001`: MCP transport
-- `stdio` and HTTP transports share the same retrieval/answer core (`RequestPipeline`, `McpServer`).
+- `stdio` and HTTP transports share the same retrieval/answer core (`src/mcp_core.py`, `RequestPipeline`).
 - If behavior seems old after code edits, restart the running server process before debugging further.
 
 ## Recent Retrieval Tuning
@@ -135,9 +135,7 @@
 - MCP shared core was split out of `src/mcp_stdio_server.py` into `src/mcp_core.py`.
   - `src/mcp_stdio_server.py` now contains stdio transport only
   - `src/mcp_http_server.py` now imports the shared core directly
-- Full test suite is green again:
-  - `python -m unittest discover -s tests -p 'test_*.py' -q`
-  - `Ran 105 tests / OK`
+- Full test suite was green after this refactor pass.
 
 ## Retrieval Follow-up (2026-03-19 / alias + decree titles)
 - Sensitive-identifier questions that mention a colloquial law alias should now prefer alias-matched official law families before treating the alias text itself as the primary search anchor.
@@ -159,6 +157,19 @@
 - Added regression coverage for:
   - descriptive alias canonicalization (`전자상거래법` -> official law)
   - preserving `공동주택관리법` as primary law for apartment-management questions
-- Full suite:
+- Full suite was green after this alias-normalization pass.
+
+## Answer Policy Follow-up (2026-03-20)
+- Retrieval keeps the ability to expand into related laws when needed, but answer composition now separates:
+  - the result within the law family explicitly named in the question
+  - supplementary grounds found in related laws
+- A new `question_law_scope` summary is built inside `law_enrichment` so the answer layer can distinguish:
+  - "질문 기준 법령에서 직접 근거를 찾은 경우"
+  - "질문 기준 법령에서는 직접 근거를 못 찾았고, 관련 법령을 보완 근거로 쓴 경우"
+- This policy is intended to preserve the current system's strength (still finding the answer when the user names a law loosely or partially) without making related-law grounds look like they came from the exact law the user asked about.
+- Answer composition now prefers:
+  - question-law-family result first
+  - supplementary related-law basis second
+- Full test suite is green in the current state:
   - `python -m unittest discover -s tests -p 'test_*.py' -q`
-  - `Ran 110 tests / OK`
+  - `Ran 114 tests / OK`
