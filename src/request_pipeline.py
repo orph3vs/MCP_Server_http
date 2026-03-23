@@ -162,6 +162,34 @@ class RequestPipeline:
     _COMMON_LAW_ALIASES = {
         "개보법": ("개인정보 보호법", "개인정보보호법"),
     }
+    _GENERIC_PRIVACY_LAW_FAMILIES = {
+        "개인정보 보호법",
+    }
+    _CONTEXT_ACTOR_HINTS = (
+        "관리주체",
+        "관리업체",
+        "주택관리업자",
+        "입주자대표회의",
+        "입주민",
+        "주민",
+        "관리사무소",
+        "수탁자",
+        "위탁",
+        "원청",
+        "사업자",
+        "기관",
+        "담당자",
+        "참여자",
+        "신청인",
+        "관리방법",
+        "관리업무",
+    )
+    _GENERIC_PRIVACY_ACTOR_MARKERS = (
+        "보호위원회",
+        "분쟁조정위원회",
+        "정보전송자",
+        "중계전문기관",
+    )
 
     _PRIVACY_PROCESSING_KEYWORDS = (
         "개인정보",
@@ -509,6 +537,135 @@ class RequestPipeline:
     @classmethod
     def _law_slug(cls, law_name: str) -> str:
         return re.sub(r"[^가-힣A-Za-z0-9]", "", cls._law_family_name(law_name)).lower()
+
+    @classmethod
+    def _normalized_contains(cls, haystack: str, needle: str) -> bool:
+        haystack_slug = re.sub(r"[^가-힣A-Za-z0-9]", "", cls._clean_text(haystack)).lower()
+        needle_slug = re.sub(r"[^가-힣A-Za-z0-9]", "", cls._clean_text(needle)).lower()
+        return bool(haystack_slug and needle_slug and needle_slug in haystack_slug)
+
+    @classmethod
+    def _non_generic_context_law_families(
+        cls,
+        *,
+        user_query: str,
+        explicit_law_family: str,
+        related_law_queries: List[str],
+    ) -> set[str]:
+        families = {
+            cls._law_family_name(query)
+            for query in related_law_queries
+            if cls._law_family_name(query)
+        }
+        if explicit_law_family:
+            families.add(explicit_law_family)
+        normalized_query = cls._clean_text(user_query).lower()
+        for law_name, hints in cls._RELATED_LAW_HINTS.items():
+            family = cls._law_family_name(law_name)
+            if family and any(hint.lower() in normalized_query for hint in hints):
+                families.add(family)
+        return {
+            family
+            for family in families
+            if family and family not in cls._GENERIC_PRIVACY_LAW_FAMILIES
+        }
+
+    @classmethod
+    def _query_context_terms(
+        cls,
+        *,
+        user_query: str,
+        explicit_law_family: str,
+        related_law_queries: List[str],
+    ) -> List[str]:
+        normalized_query = cls._clean_text(user_query)
+        context_terms: List[str] = []
+        non_generic_families = cls._non_generic_context_law_families(
+            user_query=user_query,
+            explicit_law_family=explicit_law_family,
+            related_law_queries=related_law_queries,
+        )
+
+        for family in non_generic_families:
+            for law_name, hints in cls._RELATED_LAW_HINTS.items():
+                if cls._law_family_name(law_name) != family:
+                    continue
+                for hint in hints:
+                    if cls._normalized_contains(normalized_query, hint):
+                        context_terms.append(hint)
+                for token in cls._law_name_tokens(family):
+                    if cls._normalized_contains(normalized_query, token):
+                        context_terms.append(token)
+
+        for hint in cls._CONTEXT_ACTOR_HINTS:
+            if cls._normalized_contains(normalized_query, hint):
+                context_terms.append(hint)
+
+        deduped: List[str] = []
+        seen = set()
+        for term in context_terms:
+            cleaned = cls._clean_text(term)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                deduped.append(cleaned)
+        return deduped
+
+    @classmethod
+    def _context_overlap_count(cls, text: str, context_terms: List[str]) -> int:
+        return sum(1 for term in context_terms if cls._normalized_contains(text, term))
+
+    @classmethod
+    def _law_context_relevance_adjustment(
+        cls,
+        *,
+        user_query: str,
+        law_name: str,
+        article_text: str = "",
+        related_law_queries: List[str],
+    ) -> int:
+        explicit_law_reference = cls._explicit_law_reference(user_query)
+        explicit_law_family = cls._law_family_name(explicit_law_reference or "")
+        non_generic_families = cls._non_generic_context_law_families(
+            user_query=user_query,
+            explicit_law_family=explicit_law_family,
+            related_law_queries=related_law_queries,
+        )
+        if not non_generic_families:
+            return 0
+
+        law_family = cls._law_family_name(law_name)
+        context_terms = cls._query_context_terms(
+            user_query=user_query,
+            explicit_law_family=explicit_law_family,
+            related_law_queries=related_law_queries,
+        )
+        haystack = cls._clean_text(f"{law_name} {article_text}")
+        overlap_count = cls._context_overlap_count(haystack, context_terms)
+        actor_marker_overlap = sum(
+            1 for marker in cls._GENERIC_PRIVACY_ACTOR_MARKERS if marker in haystack and marker in cls._clean_text(user_query)
+        )
+        actor_marker_mismatch = any(
+            marker in haystack and marker not in cls._clean_text(user_query)
+            for marker in cls._GENERIC_PRIVACY_ACTOR_MARKERS
+        )
+
+        adjustment = 0
+        if law_family in non_generic_families:
+            adjustment += 6
+            if overlap_count:
+                adjustment += min(overlap_count, 3) * 4
+            if actor_marker_mismatch and not actor_marker_overlap:
+                adjustment -= 10
+            return adjustment
+
+        if law_family in cls._GENERIC_PRIVACY_LAW_FAMILIES:
+            if overlap_count:
+                adjustment += min(overlap_count, 2) * 2
+            elif context_terms:
+                adjustment -= 14
+            if actor_marker_mismatch and not actor_marker_overlap:
+                adjustment -= 12
+        return adjustment
 
     @classmethod
     def _candidate_law_references(cls, user_query: str) -> List[str]:
@@ -1003,7 +1160,7 @@ class RequestPipeline:
         if not clean_query:
             return []
 
-        titles = cls._SENSITIVE_IDENTIFIER_TITLE_KEYWORDS[:2]
+        titles = list(dict.fromkeys(cls._SENSITIVE_IDENTIFIER_TITLE_KEYWORDS))
         if clean_query.endswith(" 시행령") or clean_query.endswith(" 시행규칙"):
             return [f"{clean_query} {title}" for title in titles]
         return [f"{clean_query} 시행령 {title}" for title in titles]
@@ -1613,6 +1770,12 @@ class RequestPipeline:
             elif law_name.endswith("시행규칙"):
                 score += 2
 
+        score += cls._law_context_relevance_adjustment(
+            user_query=normalized_query,
+            law_name=law_name,
+            related_law_queries=related_law_queries,
+        )
+
         return score
 
     @classmethod
@@ -1866,6 +2029,12 @@ class RequestPipeline:
                     total_score += 12
                 if law_family and law_family in related_law_families:
                     total_score += 12
+                total_score += self._law_context_relevance_adjustment(
+                    user_query=user_query,
+                    law_name=law_name,
+                    article_text=str(matched.get("article_text") or ""),
+                    related_law_queries=self._resolved_related_law_queries(user_query),
+                )
                 if total_score > best_total_score:
                     best_total_score = total_score
                     best_match = matched
@@ -1901,6 +2070,49 @@ class RequestPipeline:
                 reordered = [matched_item] + [item for item in all_laws if item is not matched_item]
                 law_data = {"LawSearch": {"law": reordered}}
                 all_laws = reordered
+
+        explicit_law_reference = self._explicit_law_reference(user_query)
+        explicit_law_family = self._law_family_name(explicit_law_reference or "")
+        context_families = self._non_generic_context_law_families(
+            user_query=user_query,
+            explicit_law_family=explicit_law_family,
+            related_law_queries=self._resolved_related_law_queries(user_query),
+        )
+        if all_laws and context_families:
+            current_primary_name = self._clean_text(
+                str(
+                    all_laws[0].get("법령명한글")
+                    or all_laws[0].get("법령명_한글")
+                    or all_laws[0].get("법령명")
+                    or all_laws[0].get("name")
+                    or ""
+                )
+            )
+            current_primary_family = self._law_family_name(current_primary_name)
+            if current_primary_family in self._GENERIC_PRIVACY_LAW_FAMILIES:
+                contextual_item = next(
+                    (
+                        item
+                        for item in all_laws
+                        if self._law_family_name(
+                            self._clean_text(
+                                str(
+                                    item.get("법령명한글")
+                                    or item.get("법령명_한글")
+                                    or item.get("법령명")
+                                    or item.get("name")
+                                    or ""
+                                )
+                            )
+                        )
+                        in context_families
+                    ),
+                    None,
+                )
+                if contextual_item is not None:
+                    reordered = [contextual_item] + [item for item in all_laws if item is not contextual_item]
+                    law_data = {"LawSearch": {"law": reordered}}
+                    all_laws = reordered
 
         primary_law = self._pick_primary_law(law_data)
         enrichment: Dict[str, Any] = {

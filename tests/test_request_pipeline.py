@@ -377,6 +377,62 @@ class FakeLawApiQuestionScopeFallback(FakeLawApiOk):
         }
 
 
+class FakeLawApiApartmentContextPriority(FakeLawApiOk):
+    def search_law(self, query):
+        self.search_queries.append(query)
+        return {
+            "LawSearch": {
+                "law": [
+                    {
+                        "법령ID": "011358",
+                        "법령명한글": "개인정보 보호법 시행령",
+                        "법령일련번호": "270352",
+                    },
+                    {
+                        "법령ID": "012345",
+                        "법령명한글": "공동주택관리법",
+                        "법령일련번호": "280069",
+                    },
+                    {
+                        "법령ID": "011357",
+                        "법령명한글": "개인정보 보호법",
+                        "법령일련번호": "270351",
+                    },
+                ]
+            }
+        }
+
+    def find_article_by_keywords(self, law_id, keywords):
+        if law_id == "011358":
+            return {
+                "law_id": "011358",
+                "article_no": "제62조의2",
+                "article_base_no": "제62조의2",
+                "article_text": "제62조의2(민감정보 및 고유식별정보의 처리) 보호위원회, 분쟁조정위원회, 정보전송자 및 중계전문기관은 해당 사무 수행을 위하여 불가피한 경우 처리할 수 있다.",
+                "matched_via": "service:law:keyword_scan",
+                "score": 9,
+            }
+        if law_id == "012345":
+            return {
+                "law_id": "012345",
+                "article_no": "제11조 제3항",
+                "article_base_no": "제11조",
+                "article_text": "제11조 제3항 입주자대표회의는 공동주택 관리방법을 결정할 때 위탁관리인 경우 주택관리업자 선정을 포함하여 의결한다.",
+                "matched_via": "service:law:keyword_scan",
+                "score": 6,
+            }
+        if law_id == "011357":
+            return {
+                "law_id": "011357",
+                "article_no": "제26조",
+                "article_base_no": "제26조",
+                "article_text": "제26조(업무위탁에 따른 개인정보의 처리 제한) 개인정보처리자는 업무위탁 시 수탁자를 관리·감독하여야 한다.",
+                "matched_via": "service:law:keyword_scan",
+                "score": 7,
+            }
+        return None
+
+
 class RequestPipelineTests(unittest.TestCase):
     def test_absolute_link_strips_oc_query_parameter(self):
         raw_link = "https://www.law.go.kr/DRF/lawService.do?OC=secret-value&target=law&MST=270351&type=HTML"
@@ -1199,12 +1255,43 @@ def _patched_test_process_persists_fallback_question_scope_into_answer_plan(self
         self.assertEqual(result.answer_plan["question_law_scope"]["status"], "supplementary_basis_used")
 
 
+def _patched_test_sensitive_identifier_title_queries_include_rrn_title(self):
+    queries = RequestPipeline._sensitive_identifier_title_queries("공동주택관리법")
+
+    self.assertIn("공동주택관리법 시행령 고유식별정보의 처리", queries)
+    self.assertIn("공동주택관리법 시행령 민감정보 및 고유식별정보의 처리", queries)
+    self.assertIn("공동주택관리법 시행령 주민등록번호의 처리", queries)
+
+
+def _patched_test_contextual_article_priority_avoids_generic_privacy_decree_as_primary(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiApartmentContextPriority()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="공동주택(아파트) 관리에서 관리주체가 외부 특정 업체에 관리업무를 맡길 수 있는지, 그리고 그 업체가 입주민 개인정보를 처리할 수 있는지",
+                context="기준시점: 2026-03-20",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "공동주택관리법")
+        article = result.citations["law_context"].get("article") or {}
+        self.assertNotEqual(article.get("article_no"), "제62조의2")
+        related_law_names = [item["law_name"] for item in result.citations["law_context"].get("related_laws") or [] if item.get("law_name")]
+        self.assertIn("개인정보 보호법", related_law_names)
+
+
 RequestPipelineTests.test_approved_law_hint_override_is_used_for_related_queries = _patched_test_approved_law_hint_override_is_used_for_related_queries
 RequestPipelineTests.test_error_suggestion_records_reason_code = _patched_test_error_suggestion_records_reason_code
 RequestPipelineTests.test_approved_law_hint_override_is_used_for_official_query_resolution = _patched_test_approved_law_hint_override_is_used_for_official_query_resolution
 RequestPipelineTests.test_process_records_question_scope_gap_suggestion_when_related_basis_is_used = _patched_test_process_records_question_scope_gap_suggestion_when_related_basis_is_used
 RequestPipelineTests.test_process_adds_clarification_for_ambiguous_privacy_processing_question = _patched_test_process_adds_clarification_for_ambiguous_privacy_processing_question
 RequestPipelineTests.test_process_persists_fallback_question_scope_into_answer_plan = _patched_test_process_persists_fallback_question_scope_into_answer_plan
+RequestPipelineTests.test_sensitive_identifier_title_queries_include_rrn_title = _patched_test_sensitive_identifier_title_queries_include_rrn_title
+RequestPipelineTests.test_contextual_article_priority_avoids_generic_privacy_decree_as_primary = _patched_test_contextual_article_priority_avoids_generic_privacy_decree_as_primary
 
 
 if __name__ == "__main__":

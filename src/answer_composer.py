@@ -380,11 +380,45 @@ class AnswerComposer:
         return "unknown"
 
     @classmethod
+    def _privacy_identifier_subtype(
+        cls,
+        user_query: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+        *,
+        include_related_articles: bool = False,
+    ) -> Optional[str]:
+        haystacks = [
+            cls._clean_text(user_query),
+            cls._clean_text(article_text or ""),
+        ]
+        if include_related_articles:
+            for article in related_articles[:3]:
+                if isinstance(article, dict):
+                    haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
+
+        has_rrn = any("주민등록번호" in haystack for haystack in haystacks)
+        has_other_identifier = any(
+            any(keyword in haystack for keyword in ("외국인등록번호", "여권번호", "운전면허번호"))
+            for haystack in haystacks
+        )
+        has_generic_identifier = any("고유식별정보" in haystack for haystack in haystacks)
+
+        if has_rrn and (has_other_identifier or has_generic_identifier):
+            return "rrn_and_identifier"
+        if has_rrn:
+            return "rrn"
+        if has_other_identifier or has_generic_identifier:
+            return "identifier"
+        return None
+
+    @classmethod
     def _privacy_legal_basis_checkpoints(
         cls,
         *,
         actions: List[str],
         data_scope: str,
+        identifier_subtype: Optional[str],
     ) -> List[str]:
         checkpoints: List[str] = []
         if "수집" in actions or "이용" in actions:
@@ -395,11 +429,37 @@ class AnswerComposer:
             checkpoints.append("개인정보 보호법 제18조 목적 외 이용·제공 제한")
         if "위탁" in actions:
             checkpoints.append("개인정보 보호법 제26조 처리위탁 요건")
-        if data_scope == "identifier":
-            checkpoints.append("개인정보 보호법 제24조 및 제24조의2 고유식별정보·주민등록번호 제한")
+        if identifier_subtype == "rrn":
+            checkpoints.append("개인정보 보호법 제24조의2 주민등록번호 처리 제한")
+        elif identifier_subtype == "rrn_and_identifier":
+            checkpoints.append("개인정보 보호법 제24조의2 주민등록번호 처리 제한")
+            checkpoints.append("개인정보 보호법 제24조 고유식별정보 처리 제한")
+        elif data_scope == "identifier":
+            checkpoints.append("개인정보 보호법 제24조 고유식별정보 처리 제한")
         elif data_scope == "mixed":
             checkpoints.append("개인정보 보호법 제15조, 제17조, 제18조와 고유식별정보 제한 규정의 병행 검토")
         return checkpoints
+
+    @classmethod
+    def _privacy_special_rules(
+        cls,
+        *,
+        identifier_subtype: Optional[str],
+    ) -> List[str]:
+        if identifier_subtype == "rrn":
+            return [
+                "주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고, 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 있어야 합니다."
+            ]
+        if identifier_subtype == "rrn_and_identifier":
+            return [
+                "주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고, 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 있어야 합니다.",
+                "반면 주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라 법령상 근거 또는 정보주체의 별도 동의 등 처리 요건을 따져야 합니다.",
+            ]
+        if identifier_subtype == "identifier":
+            return [
+                "주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라 법령상 근거 또는 정보주체의 별도 동의 등 처리 요건을 따져야 합니다."
+            ]
+        return []
 
     @classmethod
     def _privacy_processing_analysis(
@@ -423,15 +483,41 @@ class AnswerComposer:
             related_articles,
             include_related_articles=False,
         )
+        identifier_subtype = cls._privacy_identifier_subtype(
+            user_query,
+            article_text,
+            related_articles,
+            include_related_articles=False,
+        )
         actor_status_explicit = any(keyword in normalized_query for keyword in cls._ACTOR_STATUS_KEYWORDS)
-        legal_basis_checkpoints = cls._privacy_legal_basis_checkpoints(actions=actions, data_scope=data_scope)
+        legal_basis_checkpoints = cls._privacy_legal_basis_checkpoints(
+            actions=actions,
+            data_scope=data_scope,
+            identifier_subtype=identifier_subtype,
+        )
+        special_rules = cls._privacy_special_rules(
+            identifier_subtype=identifier_subtype,
+        )
         return {
             "actor_status_explicit": actor_status_explicit,
             "processing_actions": actions,
             "data_scope": data_scope,
+            "identifier_subtype": identifier_subtype,
             "legal_basis_checkpoints": legal_basis_checkpoints,
+            "special_rules": special_rules,
             "clarification_needed": bool((clarification or {}).get("clarification_needed")),
         }
+
+    @classmethod
+    def _privacy_special_rules_block(cls, privacy_analysis: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not privacy_analysis:
+            return None
+        special_rules = privacy_analysis.get("special_rules") or []
+        if not special_rules:
+            return None
+        lines = ["[고유식별정보 구분]"]
+        lines.extend(f"- {rule}" for rule in special_rules)
+        return "\n".join(lines)
 
     @staticmethod
     def _question_scope_status(
@@ -1047,6 +1133,9 @@ class AnswerComposer:
             lines.extend(["", intent_block])
         if plan.privacy_processing_summary:
             lines.extend(["", plan.privacy_processing_summary])
+        privacy_special_rules_block = self._privacy_special_rules_block(plan.privacy_analysis)
+        if privacy_special_rules_block:
+            lines.extend(["", privacy_special_rules_block])
         if plan.clause_summary_block:
             lines.extend(["", plan.clause_summary_block])
         if plan.related_block:
@@ -1088,6 +1177,9 @@ class AnswerComposer:
 
         if plan.related_block:
             lines.extend(["", plan.related_block])
+        privacy_special_rules_block = self._privacy_special_rules_block(plan.privacy_analysis)
+        if privacy_special_rules_block:
+            lines.extend(["", privacy_special_rules_block])
         if plan.precedent_block:
             lines.extend(["", plan.precedent_block])
         if plan.review_notice:

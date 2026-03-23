@@ -635,5 +635,100 @@ def _patched_test_privacy_analysis_ignores_related_article_false_positive_signal
 AnswerComposerTests.test_privacy_analysis_ignores_related_article_false_positive_signals = _patched_test_privacy_analysis_ignores_related_article_false_positive_signals
 
 
+def _patched_test_privacy_analysis_prioritizes_rrn_special_rule(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="관리업체가 주민등록번호를 수집할 수 있나",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법 시행령"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제98조",
+                    "article_text": "제98조(고유식별정보의 처리) 대통령령으로 정하는 사무에 따라 주민등록번호를 처리할 수 있다.",
+                },
+                "related_articles": [],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertIsNotNone(plan.privacy_analysis)
+    self.assertEqual(plan.privacy_analysis["data_scope"], "identifier")
+    self.assertEqual(plan.privacy_analysis["identifier_subtype"], "rrn_and_identifier")
+    self.assertIn("개인정보 보호법 제24조의2 주민등록번호 처리 제한", plan.privacy_analysis["legal_basis_checkpoints"])
+
+
+AnswerComposerTests.test_privacy_analysis_prioritizes_rrn_special_rule = _patched_test_privacy_analysis_prioritizes_rrn_special_rule
+
+
+def _patched_test_compose_explicitly_distinguishes_rrn_and_identifier_rules(self):
+    result = self.composer.compose(
+        AnswerCompositionInput(
+            user_query="관리업체가 주민등록번호 같은 고유식별정보를 수집할 수 있나",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법 시행령"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제98조",
+                    "article_text": "제98조(고유식별정보의 처리) 대통령령으로 정하는 사무에 따라 주민등록번호 또는 외국인등록번호를 처리할 수 있다.",
+                },
+                "related_articles": [],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertIn("[고유식별정보 구분]", result)
+    self.assertIn("주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고", result)
+    self.assertIn("반면 주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라", result)
+
+
+AnswerComposerTests.test_compose_explicitly_distinguishes_rrn_and_identifier_rules = _patched_test_compose_explicitly_distinguishes_rrn_and_identifier_rules
+
+
+def _patched_test_privacy_analysis_exposes_rrn_and_identifier_special_rules(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="관리업체가 주민등록번호 같은 고유식별정보를 수집할 수 있나",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "공동주택관리법 시행령"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제98조",
+                    "article_text": "제98조(고유식별정보의 처리) 대통령령으로 정하는 사무에 따라 주민등록번호 또는 외국인등록번호를 처리할 수 있다.",
+                },
+                "related_articles": [],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertIsNotNone(plan.privacy_analysis)
+    self.assertEqual(plan.privacy_analysis["identifier_subtype"], "rrn_and_identifier")
+    self.assertIn(
+        "주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고, 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 있어야 합니다.",
+        plan.privacy_analysis["special_rules"],
+    )
+    self.assertIn(
+        "반면 주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라 법령상 근거 또는 정보주체의 별도 동의 등 처리 요건을 따져야 합니다.",
+        plan.privacy_analysis["special_rules"],
+    )
+
+
+AnswerComposerTests.test_privacy_analysis_exposes_rrn_and_identifier_special_rules = _patched_test_privacy_analysis_exposes_rrn_and_identifier_special_rules
+
+
 if __name__ == "__main__":
     unittest.main()
