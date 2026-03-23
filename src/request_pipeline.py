@@ -511,6 +511,10 @@ class RequestPipeline:
     def _sensitive_identifier_keywords(cls, user_query: str) -> List[str]:
         normalized = cls._clean_text(user_query)
         keywords = [
+            "二쇰??깅줉踰덊샇",
+            "怨좎쑀?앸퀎?뺣낫",
+            "誘쇨컧?뺣낫",
+            "주민등록번호 처리의 제한",
             "주민등록번호",
             "고유식별정보",
             "민감정보",
@@ -1161,6 +1165,8 @@ class RequestPipeline:
             return []
 
         titles = list(dict.fromkeys(cls._SENSITIVE_IDENTIFIER_TITLE_KEYWORDS))
+        if "주민등록번호 처리의 제한" not in titles:
+            titles.append("주민등록번호 처리의 제한")
         if clean_query.endswith(" 시행령") or clean_query.endswith(" 시행규칙"):
             return [f"{clean_query} {title}" for title in titles]
         return [f"{clean_query} 시행령 {title}" for title in titles]
@@ -1204,6 +1210,7 @@ class RequestPipeline:
         keywords: List[str] = list(cls._CLAUSE_SCAN_TITLE_KEYWORDS)
         if cls._is_sensitive_identifier_question(normalized):
             keywords.extend(cls._SENSITIVE_IDENTIFIER_TITLE_KEYWORDS)
+            keywords.append("주민등록번호 처리의 제한")
         issue_terms = cls._extract_issue_query_terms(normalized)
         keywords.extend(issue_terms[:6])
         keywords.extend(cls._extract_hint_candidate_keywords(normalized))
@@ -1222,6 +1229,8 @@ class RequestPipeline:
             if cleaned and cleaned not in seen:
                 seen.add(cleaned)
                 deduped.append(cleaned)
+        if cls._is_sensitive_identifier_question(normalized):
+            return deduped[:28]
         return deduped[:20]
 
     @classmethod
@@ -2040,6 +2049,204 @@ class RequestPipeline:
                     best_match = matched
         return best_match
 
+    @staticmethod
+    def _extract_article_title(article_text: str) -> str:
+        normalized = RequestPipeline._clean_text(article_text)
+        if not normalized:
+            return ""
+        match = re.search(r"제\s*\d+\s*조(?:의\s*\d+)?\(([^)]+)\)", normalized)
+        if not match:
+            return ""
+        return RequestPipeline._clean_text(match.group(1))
+
+    @classmethod
+    def _privacy_general_law_article_candidates(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        candidates: List[str] = []
+        if "주민등록번호" in normalized:
+            candidates.extend(["제24조의2", "제24조"])
+        elif any(keyword in normalized for keyword in ("고유식별정보", "외국인등록번호", "여권번호", "운전면허번호")):
+            candidates.append("제24조")
+        if "민감정보" in normalized:
+            candidates.append("제23조")
+        if any(keyword in normalized for keyword in ("수집", "이용", "처리", "동의", "적법", "가능")):
+            candidates.append("제15조")
+
+        deduped: List[str] = []
+        seen = set()
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                deduped.append(candidate)
+        return deduped
+
+    @classmethod
+    def _should_promote_general_privacy_law_basis(
+        cls,
+        *,
+        user_query: str,
+        primary_law: Dict[str, Any],
+        article: Dict[str, Any],
+        related_law_queries: List[str],
+    ) -> bool:
+        normalized = cls._clean_text(user_query)
+        if not cls._is_sensitive_identifier_question(normalized):
+            return False
+
+        if cls._extract_article_numbers(normalized):
+            return False
+
+        explicit_law_reference = cls._explicit_law_reference(normalized)
+        explicit_law_family = cls._law_family_name(
+            cls._clean_text(explicit_law_reference or "")
+        )
+        if explicit_law_reference and (
+            explicit_law_reference.endswith("시행령")
+            or explicit_law_reference.endswith("시행규칙")
+        ):
+            return False
+
+        non_generic_families = cls._non_generic_context_law_families(
+            user_query=user_query,
+            explicit_law_family=explicit_law_family,
+            related_law_queries=related_law_queries,
+        )
+        if non_generic_families:
+            return False
+
+        primary_law_name = cls._clean_text(str(primary_law.get("law_name") or ""))
+        if cls._law_family_name(primary_law_name) not in cls._GENERIC_PRIVACY_LAW_FAMILIES:
+            return False
+        if not primary_law_name.endswith("시행령"):
+            return False
+
+        return True
+
+    def _promote_general_privacy_law_basis(
+        self,
+        *,
+        user_query: str,
+        law_items: List[Dict[str, Any]],
+        primary_law: Dict[str, Any],
+        article: Dict[str, Any],
+        metrics: Optional[Dict[str, int]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not self._should_promote_general_privacy_law_basis(
+            user_query=user_query,
+            primary_law=primary_law,
+            article=article,
+            related_law_queries=self._resolved_related_law_queries(user_query),
+        ):
+            return None
+
+        target_item = next(
+            (
+                item
+                for item in law_items
+                if self._law_family_name(
+                    self._clean_text(
+                        str(
+                            item.get("법령명한글")
+                            or item.get("법령명한자")
+                            or item.get("법령명")
+                            or item.get("name")
+                            or ""
+                        )
+                    )
+                )
+                in self._GENERIC_PRIVACY_LAW_FAMILIES
+                and not self._clean_text(
+                    str(
+                        item.get("법령명한글")
+                        or item.get("법령명한자")
+                        or item.get("법령명")
+                        or item.get("name")
+                        or ""
+                    )
+                ).endswith("시행령")
+                and not self._clean_text(
+                    str(
+                        item.get("법령명한글")
+                        or item.get("법령명한자")
+                        or item.get("법령명")
+                        or item.get("name")
+                        or ""
+                    )
+                ).endswith("시행규칙")
+            ),
+            None,
+        )
+
+        if target_item is None and hasattr(self.law_api, "search_law"):
+            if metrics is not None:
+                self._increment_metric(metrics, "law_search_count")
+                self._increment_metric(metrics, "nlic_calls")
+            try:
+                privacy_law_data = self.law_api.search_law("개인정보 보호법")
+            except Exception:
+                privacy_law_data = {}
+            target_item = next(
+                iter(self._extract_law_items(privacy_law_data)),
+                None,
+            )
+
+        if target_item is None:
+            return None
+
+        promoted_primary_law = {
+            "law_id": str(
+                target_item.get("법령ID") or target_item.get("법령일련번호") or target_item.get("id") or ""
+            ).strip()
+            or None,
+            "law_name": self._clean_text(
+                str(
+                    target_item.get("법령명한글")
+                    or target_item.get("법령명한자")
+                    or target_item.get("법령명")
+                    or target_item.get("name")
+                    or ""
+                )
+            )
+            or None,
+            "raw": target_item,
+        }
+        if not promoted_primary_law.get("law_id"):
+            return None
+
+        candidate_articles = self._privacy_general_law_article_candidates(user_query)
+        promoted_article: Optional[Dict[str, Any]] = None
+        for article_no in candidate_articles:
+            try:
+                candidate = self._fetch_article(
+                    law_id=promoted_primary_law["law_id"],
+                    article_no=article_no,
+                    metrics=metrics,
+                )
+            except Exception:
+                continue
+            if candidate and candidate.get("found") and candidate.get("article_text"):
+                promoted_article = candidate
+                break
+
+        if promoted_article is None:
+            return None
+
+        promoted_version = None
+        if hasattr(self.law_api, "get_version"):
+            try:
+                if metrics is not None:
+                    self._increment_metric(metrics, "version_fetch_count")
+                    self._increment_metric(metrics, "nlic_calls")
+                promoted_version = self.law_api.get_version(promoted_primary_law["law_id"])
+            except Exception:
+                promoted_version = None
+
+        return {
+            "primary_law": promoted_primary_law,
+            "article": promoted_article,
+            "version": promoted_version,
+        }
+
     def _build_law_enrichment(
         self,
         user_query: str,
@@ -2189,6 +2396,30 @@ class RequestPipeline:
                 )
             except Exception as exc:
                 enrichment["article_error"] = str(exc)
+
+        promoted_privacy_basis = self._promote_general_privacy_law_basis(
+            user_query=user_query,
+            law_items=all_laws,
+            primary_law=primary_law,
+            article=enrichment.get("article") or {},
+            metrics=metrics,
+        )
+        if promoted_privacy_basis:
+            primary_law = promoted_privacy_basis["primary_law"]
+            law_id = primary_law["law_id"]
+            enrichment["primary_law"] = primary_law
+            enrichment["article"] = promoted_privacy_basis["article"]
+            if promoted_privacy_basis.get("version") is not None:
+                enrichment["version"] = promoted_privacy_basis["version"]
+            question_law_scope = enrichment.get("question_law_scope") or {}
+            question_scope_family = self._law_family_name(
+                str(question_law_scope.get("target_law_family") or "")
+            )
+            if question_scope_family in self._GENERIC_PRIVACY_LAW_FAMILIES:
+                question_law_scope["direct_basis_found"] = True
+                question_law_scope["primary_law"] = primary_law
+                question_law_scope["article"] = promoted_privacy_basis["article"]
+                enrichment["question_law_scope"] = question_law_scope
 
         related_articles: List[Dict[str, Any]] = []
         should_fetch_related = intent in {"difference", "procedure", "applicability"} or len(article_numbers) > 1

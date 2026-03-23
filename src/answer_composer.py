@@ -419,6 +419,7 @@ class AnswerComposer:
         actions: List[str],
         data_scope: str,
         identifier_subtype: Optional[str],
+        sensitive_info_involved: bool,
     ) -> List[str]:
         checkpoints: List[str] = []
         if "수집" in actions or "이용" in actions:
@@ -429,6 +430,8 @@ class AnswerComposer:
             checkpoints.append("개인정보 보호법 제18조 목적 외 이용·제공 제한")
         if "위탁" in actions:
             checkpoints.append("개인정보 보호법 제26조 처리위탁 요건")
+        if sensitive_info_involved:
+            checkpoints.append("개인정보 보호법 제23조 민감정보 처리 제한")
         if identifier_subtype == "rrn":
             checkpoints.append("개인정보 보호법 제24조의2 주민등록번호 처리 제한")
         elif identifier_subtype == "rrn_and_identifier":
@@ -445,21 +448,51 @@ class AnswerComposer:
         cls,
         *,
         identifier_subtype: Optional[str],
+        sensitive_info_involved: bool,
     ) -> List[str]:
+        rules: List[str] = []
+        if sensitive_info_involved:
+            rules.append(
+                "민감정보는 개인정보 보호법 제23조에 따라 원칙적으로 처리가 제한되며, 법령에서 허용하거나 정보주체의 별도 동의가 있는 등 예외 요건을 따져야 합니다."
+            )
         if identifier_subtype == "rrn":
-            return [
+            rules.append(
                 "주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고, 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 있어야 합니다."
-            ]
+            )
+            return rules
         if identifier_subtype == "rrn_and_identifier":
-            return [
-                "주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고, 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 있어야 합니다.",
-                "반면 주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라 법령상 근거 또는 정보주체의 별도 동의 등 처리 요건을 따져야 합니다.",
-            ]
+            rules.extend(
+                [
+                    "주민등록번호는 개인정보 보호법 제24조의2에 따라 정보주체의 동의만으로 처리할 수 없고, 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 있어야 합니다.",
+                    "반면 주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라 법령상 근거 또는 정보주체의 별도 동의 등 처리 요건을 따져야 합니다.",
+                ]
+            )
+            return rules
         if identifier_subtype == "identifier":
-            return [
+            rules.append(
                 "주민등록번호 외 고유식별정보는 개인정보 보호법 제24조에 따라 법령상 근거 또는 정보주체의 별도 동의 등 처리 요건을 따져야 합니다."
-            ]
-        return []
+            )
+            return rules
+        return rules
+
+    @classmethod
+    def _privacy_sensitive_info_involved(
+        cls,
+        user_query: str,
+        article_text: Optional[str],
+        related_articles: List[Dict[str, Any]],
+        *,
+        include_related_articles: bool = False,
+    ) -> bool:
+        haystacks = [
+            cls._clean_text(user_query),
+            cls._clean_text(article_text or ""),
+        ]
+        if include_related_articles:
+            for article in related_articles[:3]:
+                if isinstance(article, dict):
+                    haystacks.append(cls._clean_text(str(article.get("article_text", ""))))
+        return any("민감정보" in haystack for haystack in haystacks)
 
     @classmethod
     def _privacy_processing_analysis(
@@ -489,20 +522,29 @@ class AnswerComposer:
             related_articles,
             include_related_articles=False,
         )
+        sensitive_info_involved = cls._privacy_sensitive_info_involved(
+            user_query,
+            article_text,
+            related_articles,
+            include_related_articles=False,
+        )
         actor_status_explicit = any(keyword in normalized_query for keyword in cls._ACTOR_STATUS_KEYWORDS)
         legal_basis_checkpoints = cls._privacy_legal_basis_checkpoints(
             actions=actions,
             data_scope=data_scope,
             identifier_subtype=identifier_subtype,
+            sensitive_info_involved=sensitive_info_involved,
         )
         special_rules = cls._privacy_special_rules(
             identifier_subtype=identifier_subtype,
+            sensitive_info_involved=sensitive_info_involved,
         )
         return {
             "actor_status_explicit": actor_status_explicit,
             "processing_actions": actions,
             "data_scope": data_scope,
             "identifier_subtype": identifier_subtype,
+            "sensitive_info_involved": sensitive_info_involved,
             "legal_basis_checkpoints": legal_basis_checkpoints,
             "special_rules": special_rules,
             "clarification_needed": bool((clarification or {}).get("clarification_needed")),

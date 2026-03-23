@@ -131,6 +131,16 @@ curl -X POST http://localhost:8001/mcp \
 - Because of this, recent legal questions may complete with fewer follow-up raw tool calls and more `ask`-only completions.
 - If a just-fixed behavior still looks old, restart the running server before debugging further.
 - User-facing law/article links should be checked in newly generated answers after restart.
+- Generic privacy-law fallback reminder:
+  - if a privacy question is not anchored to a non-generic domain law family, do not leave unrelated PIPA decree articles as the primary basis
+  - resident registration number questions should fall back to PIPA Article 24-2
+  - sensitive-information questions should fall back to PIPA Article 23
+  - other identifier questions should fall back to PIPA Article 24
+- 개인정보 일반 질문 fallback 메모:
+  - 비개별법 맥락이 없는 generic 개인정보 질문에서는, 관련 없는 개인정보보호법 시행령 조문을 대표 근거로 두지 않음
+  - 주민등록번호 질문은 개인정보 보호법 제24조의2로
+  - 민감정보 질문은 개인정보 보호법 제23조로
+  - 기타 고유식별정보 질문은 개인정보 보호법 제24조로 내려오는지 확인할 것
 - Current public link policy:
   - prefer `https://www.law.go.kr/법령/...`
   - do not expose `OC` in answer links

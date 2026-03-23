@@ -433,6 +433,126 @@ class FakeLawApiApartmentContextPriority(FakeLawApiOk):
         return None
 
 
+class FakeLawApiRrnGeneralLawFallback(FakeLawApiOk):
+    def search_law(self, query):
+        self.search_queries.append(query)
+        return {
+            "LawSearch": {
+                "law": [
+                    {
+                        "법령ID": "011358",
+                        "법령명한글": "개인정보 보호법 시행령",
+                        "법령일련번호": "270352",
+                    },
+                    {
+                        "법령ID": "011357",
+                        "법령명한글": "개인정보 보호법",
+                        "법령일련번호": "270351",
+                    },
+                ]
+            }
+        }
+
+    def find_article_by_keywords(self, law_id, keywords):
+        if law_id == "011358":
+            return {
+                "law_id": "011358",
+                "article_no": "제62조의2",
+                "article_base_no": "제62조의2",
+                "article_text": "제62조의2(민감정보 및 고유식별정보의 처리) 보호위원회 등은 일정한 사무를 위하여 주민등록번호 등을 처리할 수 있다.",
+                "matched_via": "service:law:keyword_scan",
+                "score": 9,
+            }
+        return None
+
+    def get_article(self, law_id, article_no):
+        self.article_calls.append((law_id, article_no))
+        if law_id == "011357" and article_no == "제24조의2":
+            return {
+                "law_id": law_id,
+                "article_no": article_no,
+                "found": True,
+                "matched_via": "service:law",
+                "article_text": "제24조의2(주민등록번호 처리의 제한) 주민등록번호는 법령에서 구체적으로 요구하거나 허용한 경우 등 예외가 아니면 처리할 수 없다.",
+            }
+        return super().get_article(law_id, article_no)
+
+
+class FakeLawApiRrnImpactAssessmentFallback(FakeLawApiRrnGeneralLawFallback):
+    def find_article_by_keywords(self, law_id, keywords):
+        if law_id == "011358":
+            return {
+                "law_id": "011358",
+                "article_no": "제35조",
+                "article_base_no": "제35조",
+                "article_text": "제35조(개인정보 영향평가의 대상) 일정 규모 이상의 개인정보파일을 대상으로 한다.",
+                "matched_clauses": [
+                    {
+                        "article_no": "제35조 제1호",
+                        "article_base_no": "제35조",
+                        "article_text": "1. 구축ㆍ운용 또는 변경하려는 개인정보파일로서 5만명 이상의 정보주체에 관한 민감정보 또는 고유식별정보의 처리가 수반되는 개인정보파일",
+                        "score": 11,
+                    }
+                ],
+                "matched_via": "service:law:keyword_scan",
+                "score": 11,
+            }
+        return None
+
+
+class FakeLawApiSensitiveInfoImpactAssessmentFallback(FakeLawApiOk):
+    def search_law(self, query):
+        self.search_queries.append(query)
+        return {
+            "LawSearch": {
+                "law": [
+                    {
+                        "법령ID": "011358",
+                        "법령명한글": "개인정보 보호법 시행령",
+                        "법령일련번호": "270352",
+                    },
+                    {
+                        "법령ID": "011357",
+                        "법령명한글": "개인정보 보호법",
+                        "법령일련번호": "270351",
+                    },
+                ]
+            }
+        }
+
+    def find_article_by_keywords(self, law_id, keywords):
+        if law_id == "011358":
+            return {
+                "law_id": "011358",
+                "article_no": "제35조",
+                "article_base_no": "제35조",
+                "article_text": "제35조(개인정보 영향평가의 대상) 일정 규모 이상의 개인정보파일을 대상으로 한다.",
+                "matched_clauses": [
+                    {
+                        "article_no": "제35조 제1호",
+                        "article_base_no": "제35조",
+                        "article_text": "1. 구축ㆍ운용 또는 변경하려는 개인정보파일로서 5만명 이상의 정보주체에 관한 민감정보 또는 고유식별정보의 처리가 수반되는 개인정보파일",
+                        "score": 11,
+                    }
+                ],
+                "matched_via": "service:law:keyword_scan",
+                "score": 11,
+            }
+        return None
+
+    def get_article(self, law_id, article_no):
+        self.article_calls.append((law_id, article_no))
+        if law_id == "011357" and article_no == "제23조":
+            return {
+                "law_id": law_id,
+                "article_no": article_no,
+                "found": True,
+                "matched_via": "service:law",
+                "article_text": "제23조(민감정보의 처리 제한) 개인정보처리자는 원칙적으로 민감정보를 처리할 수 없다.",
+            }
+        return super().get_article(law_id, article_no)
+
+
 class RequestPipelineTests(unittest.TestCase):
     def test_absolute_link_strips_oc_query_parameter(self):
         raw_link = "https://www.law.go.kr/DRF/lawService.do?OC=secret-value&target=law&MST=270351&type=HTML"
@@ -1292,6 +1412,95 @@ RequestPipelineTests.test_process_adds_clarification_for_ambiguous_privacy_proce
 RequestPipelineTests.test_process_persists_fallback_question_scope_into_answer_plan = _patched_test_process_persists_fallback_question_scope_into_answer_plan
 RequestPipelineTests.test_sensitive_identifier_title_queries_include_rrn_title = _patched_test_sensitive_identifier_title_queries_include_rrn_title
 RequestPipelineTests.test_contextual_article_priority_avoids_generic_privacy_decree_as_primary = _patched_test_contextual_article_priority_avoids_generic_privacy_decree_as_primary
+
+
+def _patched_test_process_promotes_rrn_question_to_general_law_article_24_2(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiRrnGeneralLawFallback()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="주민등록번호 수집할 때 정보주체한테 동의받아서 처리하면 되지?",
+                context="기준시점: 2026-03-20",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "개인정보 보호법")
+        self.assertEqual(result.citations["law_context"]["article"]["article_no"], "제24조의2")
+        self.assertIn("동의만으로 처리할 수 없고", result.answer)
+        self.assertIn("제24조의2", result.answer)
+
+
+RequestPipelineTests.test_process_promotes_rrn_question_to_general_law_article_24_2 = _patched_test_process_promotes_rrn_question_to_general_law_article_24_2
+
+
+def _patched_test_process_promotes_rrn_question_even_when_decree_article_is_unrelated(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiRrnImpactAssessmentFallback()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="주민등록번호 수집할 때 정보주체한테 동의받아서 처리하면 되지?",
+                context="기준시점: 2026-03-23",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "개인정보 보호법")
+        self.assertEqual(result.citations["law_context"]["article"]["article_no"], "제24조의2")
+        self.assertIn("동의만으로 처리할 수 없고", result.answer)
+        self.assertNotIn("개인정보 영향평가의 대상", result.answer)
+
+
+RequestPipelineTests.test_process_promotes_rrn_question_even_when_decree_article_is_unrelated = _patched_test_process_promotes_rrn_question_even_when_decree_article_is_unrelated
+
+
+def _patched_test_process_promotes_sensitive_info_question_to_general_law_article_23(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiSensitiveInfoImpactAssessmentFallback()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="민감정보를 동의받아 처리하면 되지?",
+                context="기준시점: 2026-03-23",
+            )
+        )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.citations["law_context"]["primary_law"]["law_name"], "개인정보 보호법")
+        self.assertEqual(result.citations["law_context"]["article"]["article_no"], "제23조")
+
+
+RequestPipelineTests.test_process_promotes_sensitive_info_question_to_general_law_article_23 = _patched_test_process_promotes_sensitive_info_question_to_general_law_article_23
+
+
+def _patched_test_question_law_scope_updates_after_general_privacy_promotion(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        law_api = FakeLawApiRrnImpactAssessmentFallback()
+        pipeline = RequestPipeline(law_api=law_api, logger=logger)
+
+        result = pipeline.process(
+            PipelineRequest(
+                user_query="주민등록번호 수집할 때 정보주체한테 동의받아서 처리하면 되지?",
+                context="기준시점: 2026-03-23",
+            )
+        )
+
+        question_scope = result.answer_plan["question_law_scope"]
+        self.assertEqual(question_scope["primary_law"]["law_name"], "개인정보 보호법")
+        self.assertEqual(question_scope["article"]["article_no"], "제24조의2")
+        self.assertEqual(question_scope["status"], "direct_basis_found")
+
+
+RequestPipelineTests.test_question_law_scope_updates_after_general_privacy_promotion = _patched_test_question_law_scope_updates_after_general_privacy_promotion
 
 
 if __name__ == "__main__":

@@ -730,5 +730,41 @@ def _patched_test_privacy_analysis_exposes_rrn_and_identifier_special_rules(self
 AnswerComposerTests.test_privacy_analysis_exposes_rrn_and_identifier_special_rules = _patched_test_privacy_analysis_exposes_rrn_and_identifier_special_rules
 
 
+def _patched_test_privacy_analysis_includes_sensitive_info_rule(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="민감정보를 동의받아 수집하면 되나",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "개인정보 보호법"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제23조",
+                    "article_text": "제23조(민감정보의 처리 제한) 개인정보처리자는 원칙적으로 민감정보를 처리할 수 없다.",
+                },
+                "related_articles": [],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertIsNotNone(plan.privacy_analysis)
+    self.assertTrue(plan.privacy_analysis["sensitive_info_involved"])
+    self.assertIn(
+        "개인정보 보호법 제23조 민감정보 처리 제한",
+        plan.privacy_analysis["legal_basis_checkpoints"],
+    )
+    self.assertIn(
+        "민감정보는 개인정보 보호법 제23조에 따라 원칙적으로 처리가 제한되며, 법령에서 허용하거나 정보주체의 별도 동의가 있는 등 예외 요건을 따져야 합니다.",
+        plan.privacy_analysis["special_rules"],
+    )
+
+
+AnswerComposerTests.test_privacy_analysis_includes_sensitive_info_rule = _patched_test_privacy_analysis_includes_sensitive_info_rule
+
+
 if __name__ == "__main__":
     unittest.main()
