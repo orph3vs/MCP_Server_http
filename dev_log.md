@@ -1,284 +1,238 @@
 # 개발 로그
 
-## 프로젝트 목표
-- 국가법령정보센터 기반의 한국어 법률 질의응답용 MCP 서버를 구축한다.
-- 광범위한 추측형 답변보다 아래 항목을 우선한다.
-  - 법령 검색
-  - 조문 조회
-  - 시행일/연혁 조회
-  - 판례 조회
-  - 근거가 있는 답변
-  - 관측 가능한 로그
+## 개요
+이 문서는 `MyMcpServer-http`의 최근 구조 변경과 운영 기준을 정리한 로그다.  
+초기 목표는 국가법령정보센터 기반 MCP 법률 Q&A 서버를 만들고, `stdio`/`HTTP` transport 모두에서 같은 코어를 재사용하는 것이었다. 최근 작업의 중심은 다음 세 가지였다.
 
-## 현재 안정 범위
-- HTTP 서버 제공 기능
-  - `/ask`
-  - 법령 도구
-  - 판례 도구
-  - 로그 대시보드
-  - suggestion 대시보드
-- MCP 서버 제공 도구
-  - `ask`
-  - `answer_with_citations`
-  - `search_law`
-  - `get_article`
-  - `get_version`
-  - `validate_article`
-  - `search_precedent`
-  - `get_precedent`
-- 요청 파이프라인 주요 기능
-  - 법령 검색 및 검색어 정규화
-  - 관련 법령 힌트 확장
-  - 조문/연혁 enrichment
-  - 판례 enrichment
-  - 질문 의도 분류
-  - 고위험/적용여부/위법성 질문에 맞춘 답변 구성
+- 질문 기준 법령과 보완 법령을 분리해서 설명하는 답변 정책 정리
+- 개인정보 질문과 넓은 법체계 질문의 분류 안정화
+- 골든 질문 세트 도입으로 회귀 방지 기준 수립
 
-## 주요 설계 결정
-- 현재 retrieval 구조를 안정 버전 `v1`로 유지한다.
-- 런타임 비용 때문에 LLM 기반 retrieval 추론은 기본 활성화하지 않는다.
-- suggestion 기능은 원칙적으로 법령 grounding 실패나 흔들림에 대한 기록/진단용으로 쓴다.
-- 로그는 아래를 구분해서 남긴다.
-  - request 단위 처리 로그
-  - raw MCP tool 호출 로그
+---
 
-## 최근 정리 작업
-- `src/request_pipeline.py`에 남아 있던 폐기된 `v2` retrieval 흔적을 제거했다.
-- 사용하지 않는 예전 판례 쿼리 빌더를 제거하고, anchor 기반 판례 검색 흐름만 유지했다.
-- 현재 안정적인 판례 검색 전략은 다음과 같다.
-  - 핵심 주제 anchor를 잡는다.
-  - 더 좁은 쟁점 용어로 확장한다.
-  - 너무 넓은 단독 판례 쿼리는 피한다.
+## 1. 공통 MCP 코어 정리
+- 공통 MCP 코어를 `src/mcp_core.py`로 분리했다.
+- `src/mcp_stdio_server.py`와 `src/mcp_http_server.py`는 transport wrapper 역할만 하도록 정리했다.
+- `ask`와 `answer_with_citations`는 같은 `RequestPipeline`을 호출한다.
+- 로그는 request 로그와 tool 로그를 구분해 남기도록 유지했다.
 
-## 현재 안정적으로 확인된 동작
-- `LOW` 위험도 질문이라도 의도가 `applicability` 또는 `illegality`로 분류되면 multi-agent 경로를 탈 수 있다.
-- 판례 검색 횟수와 최종 판례 채택은 다르다.
-  - 검색 횟수 > 0 이라고 해서 반드시 판례가 답변에 채택되는 것은 아니다.
-- MCP 클라이언트가 `ask` 호출 전에 질문을 다시 다듬을 수 있으므로, 로그의 question preview가 원문보다 더 자세할 수 있다.
+의미:
+- stdio / HTTP가 서로 다른 구현처럼 보이던 혼선을 줄였다.
+- 답변 정책과 retrieval 변경이 transport별로 따로 갈라지지 않게 했다.
 
-## 로깅
-- 비용/로그 대시보드는 아래 형식을 지원한다.
-  - raw JSON
-  - readable JSON
-  - table view
-  - HTML dashboard
-- HTML 대시보드 현재 기능
-  - request/tool 필터
-  - 새로고침
-  - 페이지 이동
-  - 오류 강조 표시
+---
 
-## Suggestion 흐름
-- suggestion 생성은 의도적으로 좁게 유지한다.
-- 현재 기본 트리거는 다음과 같다.
-  - request가 `/ask` 경로를 탔다.
-  - 법령 grounding이 흔들리거나 실패했다.
-- suggestion은 기본적으로 운영자 검토용 진단 기록이며, 승인된 규칙만 이후 검색 힌트나 우선순위 보강에 반영한다.
+## 2. 질문 기준 법령 우선 정책
+- 질문에 특정 법령이 명시되면 `본법 + 시행령 + 시행규칙`을 우선 검토하는 정책을 넣었다.
+- `question_law_scope`를 도입해 아래를 구조적으로 기록한다.
+  - 질문 기준 법령군
+  - 질문 기준 법령군에서 직접 근거를 찾았는지 여부
+  - 현재 primary law / article
+- 질문 기준 법령군에서 직접 근거가 없고 관련 법에서만 근거가 나온 경우, 답변에서 그 차이를 드러내도록 정리했다.
 
-## 재시작 / 복구 메모
-- `NLIC_OC`는 이제 코드 기본값이 아니라 런타임 환경변수로 받는다.
-- HTTP 서버 재시작
-  - `python -m src.http_server`
-- MCP HTTP 서버 재시작
-  - `python -m src.mcp_http_server`
-  - `run_mcp_http_server.cmd`
-- MCP stdio 서버 재시작
-  - `python -m src.mcp_stdio_server`
-  - `run_mcp_stdio_server.cmd`
-- 런타임 역할 분리
-  - `stdio`: 로컬 MCP 클라이언트 연동
-  - `8000`: REST/로그 확인용 로컬 서버
-  - `8001`: MCP HTTP transport
-- `stdio`와 HTTP transport는 같은 코어를 공유한다.
-  - `src/mcp_core.py`
-  - `RequestPipeline`
-- 코드 수정 후 동작이 예전처럼 보이면, 실행 중인 서버 프로세스를 먼저 재시작한다.
+의미:
+- 사용자가 특정 법을 물었는데 관련 법을 메인 답처럼 섞어 말하는 문제를 줄였다.
+- “질문한 법에서 직접 찾은 답”과 “보완 근거”를 구분하는 기반을 만들었다.
 
-## 최근 Retrieval 튜닝
-- 민감정보/고유식별정보 질문은 첫 번째 매치 법령에서 멈추지 않도록 보강했다.
-  - `lsRlt` 기반 관련 법령 확장
-  - 연결 법령 후속 검색
-  - 직접 허용 조항이 중요할 때 시행령/시행규칙 우선 탐색
-- 키워드 기반 조문 스캔이 explicit article number 없이도 전체 법령 payload에서 직접 조문을 집어올 수 있게 했다.
-- 학교밖청소년 + 주민등록번호 질문군에서 현재 안정 동작은 다음과 같다.
-  - primary grounding이 `청소년복지 지원법 시행령`으로 이동할 수 있다.
-  - 직접 관련 항목이 여러 개면 함께 노출할 수 있다.
-  - 답변 본문에 `[직접 관련 항목]` 블록이 포함될 수 있다.
+---
 
-## 직접 관련 항목 처리
-- retrieval은 더 이상 `조` 단위에서만 멈추지 않는다.
-- 매칭된 조문에 관련 `항/호`가 있으면 여러 직접 관련 항목을 함께 보존할 수 있다.
-- 현재 의도는 질문이 여러 법정 사무를 걸칠 때, 하나만 억지로 좁히기보다 2~3개의 높은 관련 항목을 같이 보여주는 것이다.
-
-## 오류 처리 메모
-- 예전에는 `get_article`이 NLIC 조문 후보 탐색 중 `HTTP 404` 하나만 나와도 전체 실패로 끝났다.
-- 현재 동작은 다음과 같다.
-  - 개별 404는 recoverable miss로 취급
-  - 다음 `JO` 후보 / target 조합을 계속 시도
-  - 후보를 모두 소진한 뒤에만 실패 처리
-- 이 변경으로 raw tool 연속 호출이 줄었고, `ask`가 한 번에 끝날 가능성이 높아졌다.
-
-## 링크 정책 업데이트
-- 사용자에게 노출되는 링크에는 NLIC `OC` 값이 들어가면 안 된다.
-- 사용자용 근거 링크는 DRF query URL보다 공개 브라우저 경로를 우선한다.
-  - `https://www.law.go.kr/법령/...`
-- 링크 형태도 단순화했다.
-  - 법 전체: `/법령/<법령명>`
-  - 조문: `/법령/<법령명>/<조문>`
-- 날짜/공포번호 tuple 세그먼트는 실제로 링크 파손 가능성을 높여서 제거했다.
-- 근거 출력은 아래를 분리한다.
-  - 조문/항목 수준 링크
-  - 법 전체 링크
-
-## 코드 리뷰 후속 작업 (2026-03-19)
-- `code_review.md` 우선순위를 기준으로 retrieval 후속 보강을 적용했다.
-- 파이프라인이 더 이상 첫 `search_law` 성공 결과에 고정되지 않는다.
-  - 초기 hit를 누적
-  - 후보를 전역 재정렬
-  - 관련 법령 확장과 시행령/시행규칙 후속 검색 결과까지 다시 반영
-- 조문 스캔은 특정 질문군에 묶이지 않도록 일반화했다.
-  - 허용 / 예외 / 제한 / 처리 가능 조문을 공통 title/trigger keyword로 탐색
-  - 민감정보 질문은 여전히 시행령/시행규칙 가중치가 있지만, 코어 로직 자체는 특정 도메인 하드코딩에서 벗어났다.
-- 예전 학교밖청소년 전용 랭킹 보정은 core scoring에서 제거했다.
-- MCP 공용 코어를 `src/mcp_stdio_server.py`에서 분리해 `src/mcp_core.py`로 옮겼다.
-  - `src/mcp_stdio_server.py`: stdio transport 전용
-  - `src/mcp_http_server.py`: 공용 코어 import
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 105 tests / OK`
-
-## Retrieval 후속 작업: alias + 시행령 제목 (2026-03-19)
-- 민감정보/고유식별정보 질문에서 구어체 약칭 법명이 들어와도, alias 해석을 먼저 시도한 뒤 공식 법령군을 우선 보게 했다.
-- 초기 검색어 생성 단계에서 시행령 direct-title query를 더 앞에 배치했다.
-  - 예: `<법령명> 시행령 고유식별정보의 처리`
-  - 예: `<법령명> 시행령 민감정보 및 고유식별정보의 처리`
-- 회귀 테스트 추가
-  - `노인일자리법` 같은 alias 질의
-  - 공식 시행령 경로 우선
-  - `제14조` 같은 직접 허용 조문 grounding
-
-## Retrieval 후속 작업: 범용 alias 정규화 (2026-03-19)
-- 서술형 약칭 법명을 매번 하드코딩하지 않도록 alias 정규화를 한 단계 일반화했다.
-- 현재 파이프라인은 다음 흐름을 따른다.
-  - 질문에서 법령명 후보를 추출
-  - `search_law`로 공식 법령명 해석
-  - 성공한 alias 정규화 결과를 main retrieval에 다시 투입
-- `위법`, `불법`, `적법` 같은 일반 단어가 법령명처럼 오인되지 않도록 explicit law-reference detection을 강화했다.
-- 질문이 이미 특정 도메인 법령군을 가리키면, 해당 법령군이 `개인정보 보호법` 같은 일반법에 덜 밀리도록 랭킹을 조정했다.
-- 회귀 테스트 추가
-  - 서술형 alias canonicalization
-  - 아파트 관리 질문에서 `공동주택관리법` 유지
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 110 tests / OK`
-
-## 답변 정책 후속 작업 (2026-03-20)
-- retrieval은 관련 법령 확장 능력을 유지하되, 답변에서는 아래를 분리하게 했다.
-  - 질문에서 직접 언급한 법령군 안의 결과
-  - 관련 법령에서 보완적으로 찾은 근거
-- `law_enrichment` 안에 `question_law_scope` 요약을 추가해서 answer layer가 아래를 구분할 수 있게 했다.
-  - 질문 기준 법령군에서 직접 근거를 찾은 경우
-  - 질문 기준 법령군에서는 직접 근거가 없고 관련 법령에서 보완 근거를 찾은 경우
-- 이 정책은 “사용자가 법명을 조금 느슨하게 말해도 답을 찾는 현재 시스템의 장점”은 유지하면서도, 관련 법령 근거가 마치 질문한 정확한 법에서 나온 것처럼 보이지 않게 하려는 목적이다.
-- answer composition은 아래 순서를 선호한다.
-  - 질문 기준 법령군 결과 먼저
-  - 관련 법령의 보완 근거는 그다음
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 114 tests / OK`
-
-## 답변 계획 도입 (2026-03-20)
-- 답변 레이어가 `law_enrichment`에서 바로 문장을 만드는 구조에서, 먼저 `AnswerPlan`을 만든 뒤 렌더하는 구조로 바뀌었다.
-- `src/answer_composer.py`는 이제 아래 파생 요소를 plan 단계에서 먼저 준비한다.
-  - question-scope block
-  - related-article block
-  - matched-clause summary
-  - 개인정보 처리 실무 프레임
-  - evidence block
-  - clarification block
-- 렌더 경로도 분리했다.
-  - grounded article answer
-  - law-only answer
-  - fallback answer
-- clarification도 answer flow 안으로 옮겼다.
-  - `RequestPipeline`이 answer composition 전에 `clarification`을 계산
-  - `AnswerComposer`가 `[추가 확인 필요]` 블록으로 렌더
-  - `src/mcp_core.py`도 같은 힌트를 MCP text output에 노출
-- `_matched_clause_labels()`의 숨은 버그도 같이 수정했다.
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 124 tests / OK`
-
-## 답변 계획 후속 작업 2 (2026-03-20)
-- 초기 `AnswerPlan` 리팩터링을 확장해서, plan 자체를 structured MCP output에도 싣도록 했다.
-- `PipelineResponse`는 이제 아래를 함께 가진다.
-  - `clarification`
-  - `answer_plan`
-- 현재 `answer_plan`에 노출되는 주요 필드
-  - intent / risk level
+## 3. AnswerPlan 도입
+- 기존에는 retrieval 결과를 바로 텍스트 답변으로 렌더링했다.
+- 이를 `AnswerPlan -> render` 구조로 바꿨다.
+- 현재 `answer_plan`에는 다음이 포함된다.
+  - intent
+  - risk level
   - direct basis
-  - question-law scope
-  - supplementary basis
-  - privacy-processing 여부 / processing actions
+  - question_law_scope
+  - supplementary_basis
+  - privacy_processing_question
+  - processing_actions
+  - privacy_analysis
   - clarification
-- `AnswerComposer`도 정리했다.
-  - intent별 내용 선택을 helper로 분리
-  - `render_plan()` 중심 렌더
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 124 tests / OK`
 
-## 답변 계획 후속 작업 3 (2026-03-20)
-- 구조화된 `answer_plan`에 개인정보 처리 질문 전용 `privacy_analysis` 블록을 추가했다.
-- 현재 `privacy_analysis`에는 아래 정보가 포함된다.
-  - 질문에 행위자 지위가 명시되어 있는지 여부
-  - 추론된 처리 행위 (`수집`, `이용`, `제공`, `위탁`, `목적 외 이용·제공`)
-  - 추론된 정보 범위 (`general`, `identifier`, `mixed`, `unknown`)
-  - 후속 판단에 참고할 법적 체크포인트
-  - 추가 확인 필요 여부
-- `question_law_scope`도 구조화 plan 안에서 상태값을 같이 노출한다.
-  - `direct_basis_found`
-  - `supplementary_basis_used`
-  - `direct_basis_not_found`
-  - `not_applicable`
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 125 tests / OK`
+의미:
+- 텍스트 답변과 structured output을 분리했다.
+- 클라이언트가 텍스트를 다시 요약하더라도 핵심 구조는 `answer_plan`으로 유지할 수 있게 했다.
 
-## 답변 계획 안정화 (2026-03-20)
-- 1/2/3차 answer planning 작업 후 follow-up regression을 점검하고 세 가지 문제를 정리했다.
-- `privacy_analysis`가 느슨한 관련 조문만 보고 처리 행위나 정보 범위를 추론하지 않도록 조정했다.
-  - 이제 질문 본문과 직접 grounding된 조문을 우선 본다.
-  - 그 결과 단순 수집 질문이 관련 조문에 `제공`, `주민등록번호`가 나온다는 이유만으로 과하게 오염되는 false positive를 줄였다.
-- explicit law reference가 있는데 scoped grounding이 실패한 경우, fallback `question_law_scope`를 다시 `law_enrichment`에 반영하도록 바꿨다.
-- MCP text summary도 planner가 이미 만든 구조화 블록을 다시 덧붙이지 않도록 조정했다.
-  - `[결론]`
-  - `[근거]`
-  - `[직접 관련 항목]`
-  - `[추가 확인 필요]`
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 127 tests / OK`
+---
 
-## 개인정보 처리 근거 안정화 (2026-03-23)
-- 다음과 같은 generic 개인정보 질문에서 대표 근거가 잘못 잡히는 크리티컬 버그를 수정했다.
-  - `주민등록번호 수집할 때 정보주체한테 동의받아서 처리하면 되지?`
-- 원인은 다음과 같았다.
-  - keyword article scan이 민감정보/고유식별정보 관련 문구가 있다는 이유만으로 generic 시행령 조문을 대표 근거로 뽑을 수 있었음
-  - 실제 처리 제한 조문이 아니라 개인정보 영향평가 같은 시행령 조문이 메인으로 잡힐 수 있었음
-- 그래서 privacy-law fallback 정책을 다음처럼 정리했다.
-  1. 먼저 개별 법령 체계(시행령/시행규칙 포함)에서 직접 처리 근거를 찾는다.
-  2. 질문이 generic 개인정보법 질문이면, 관련 없는 generic 시행령 조문을 그대로 대표 근거로 두지 않고 개인정보 보호법 본문 조문으로 승격한다.
-- 현재 general-law fallback은 아래 순서로 동작한다.
-  - 주민등록번호 -> 개인정보 보호법 제24조의2 우선
-  - 민감정보 -> 개인정보 보호법 제23조
-  - 기타 고유식별정보 -> 개인정보 보호법 제24조
-  - 수집/이용 맥락 -> 필요하면 개인정보 보호법 제15조
-- 다만 사용자가 아래처럼 범위를 명확히 좁힌 경우엔 fallback 승격을 막는다.
-  - 특정 시행령/시행규칙을 직접 말한 경우
-  - 특정 조문 번호를 직접 말한 경우
-- structured output 일관성도 같이 수정했다.
-  - generic privacy-law promotion이 일어난 뒤에는 `question_law_scope`도 같은 law/article로 갱신
-  - 그래서 본문 답변과 `answer_plan`, `clarification.current_answer_scope`가 서로 다른 조문을 가리키지 않도록 맞췄다.
-- privacy structured analysis도 보강했다.
-  - 주민등록번호:
-    - 개인정보 보호법 제24조의2에 따라 동의만으로는 부족하다는 특례 문구를 명시
-  - 주민등록번호 외 고유식별정보:
-    - 개인정보 보호법 제24조에 따른 처리 요건을 별도로 확인하도록 명시
-  - 민감정보:
-    - 개인정보 보호법 제23조 제한을 checkpoints와 special rules에 포함
-- 이 단계 이후 전체 테스트 결과:
-  - `Ran 137 tests / OK`
+## 4. Clarification 도입
+- 모호한 질문에 대해 `clarification` 구조를 추가했다.
+- 현재 반환 필드:
+  - `clarification_needed`
+  - `clarification_reason`
+  - `missing_facts`
+  - `clarification_questions`
+  - `decision_sensitivity`
+- 텍스트 답변에도 `[추가 확인 필요]` 블록으로 노출되도록 했다.
+
+운영 원칙:
+- 강제형 follow-up은 아니다.
+- “이 질문은 이런 사실을 더 확인하면 정확도가 올라간다”는 신호를 주는 용도다.
+
+---
+
+## 5. 개인정보 질문 보강
+### 5-1. 주민등록번호 / 고유식별정보 / 민감정보 fallback 정리
+- generic 개인정보 질문에서 개보법 시행령의 운영 조문이 대표 근거로 잘못 뜨는 문제를 여러 차례 수정했다.
+- 현재 일반 fallback 원칙은 다음과 같다.
+  - 주민등록번호: `개인정보 보호법 제24조의2`
+  - 민감정보: `개인정보 보호법 제23조`
+  - 기타 고유식별정보: `개인정보 보호법 제24조`
+  - 일반 수집/이용: 필요 시 `개인정보 보호법 제15조`
+- 사용자가 특정 시행령/시행규칙/조문 번호를 직접 말한 경우에는 과교정이 일어나지 않도록 승격을 막는다.
+
+### 5-2. privacy_analysis 강화
+- `privacy_analysis`에 아래 정보를 구조적으로 담도록 했다.
+  - actor_status_explicit
+  - processing_actions
+  - data_scope
+  - identifier_subtype
+  - legal_basis_checkpoints
+  - special_rules
+  - clarification_needed
+- 특히 주민등록번호에 대해서는:
+  - `동의만으로 처리할 수 없다`
+  - `제24조의2가 핵심`
+  를 더 강하게 구조화했다.
+- 민감정보에 대해서는:
+  - `제23조 민감정보 처리 제한`
+  을 checkpoints와 special rules에 포함했다.
+
+의미:
+- 주민등록번호와 일반 고유식별정보를 같은 층위로 말하는 오류를 줄였다.
+- 클라이언트가 재서술하더라도 특례 차이가 structured output에 남도록 했다.
+
+---
+
+## 6. 개인정보 질문 상위 분류 도입
+- 개인정보 질문을 다음 보조 카테고리로 멀티태깅하도록 했다.
+  - 처리 근거
+  - 정보주체 권리
+  - 절차/방법
+  - 제재/책임
+  - 적용 범위/주체
+- 이 분류는 기존 `question_intent`를 대체하지 않고, 개인정보 질문에만 보조 해석층으로 붙는다.
+
+활용:
+- retrieval relevance 보정
+- 조문 스캔 키워드 조정
+- 답변 템플릿 선택 보조
+
+의미:
+- `동의 철회`, `회원탈퇴`, `과태료`, `제재` 질문이 단순 `처리 일반` 질문으로 흘러가는 문제를 줄였다.
+
+---
+
+## 7. framework_overview 모드 도입
+- “관련 법적 근거를 정리해 달라” 같은 넓은 질문은 더 이상 `대표 조문 1개` 방식으로 처리하지 않도록 했다.
+- 새 `query_mode`:
+  - `single_basis`
+  - `framework_overview`
+- `framework_overview`에서는 `framework_axes`를 만든다.
+
+예:
+- 광고성 정보 전송 규제
+- 광고 목적 개인정보 활용
+- 광고 내용/표시 규제
+- 통신판매/소비자 유인 규제
+
+의미:
+- `문자 광고나 온라인 광고의 법적 근거` 같은 질문에 개보법 시행령 일반 조문 하나가 대표로 뜨는 문제를 줄였다.
+
+---
+
+## 8. framework 프로필 외부화
+- framework용 법령 축 프로필을 코드에서 분리했다.
+- 현재 파일:
+  - `config/framework_law_profiles.json`
+- `RequestPipeline`은 이 외부 파일을 우선 읽고, 없거나 깨졌을 때만 내부 fallback을 사용한다.
+
+이점:
+- 도메인 프로필 수정과 파이프라인 로직 수정을 분리할 수 있다.
+- 새 넓은 질문 유형 추가 시 코드 변경 범위를 줄일 수 있다.
+
+현재 운영 원칙:
+- 넓은 법체계 질문 실패는 우선 `framework_law_profiles.json` 확장으로 대응
+- 단일 근거형 질문에서 엉뚱한 조문을 잡는 문제는 `request_pipeline` 분류/점수/승격 로직 문제로 본다
+
+---
+
+## 9. suggestion 기능 정리
+- suggestion은 현재 “자동 수정 엔진”이 아니라 진단/기록에 더 가깝다.
+- runtime override 구조는 남아 있지만, 현재 운영 우선순위는 높지 않다.
+- 최근에는 suggestion보다:
+  - 질문 분류 안정화
+  - 골든 질문 회귀 고정
+  쪽이 더 중요하다고 판단했다.
+
+운영 판단:
+- suggestion은 당장 핵심 기능이 아니다.
+- 자동 보정 기능을 키우기보다, 실패 케이스를 분류해서 코드/프로필/골든 질문으로 반영하는 편이 효율적이다.
+
+---
+
+## 10. request_pipeline 정리
+- 죽은 1세대 framework 경로를 제거했다.
+- 실제 사용 중인 `framework` 경로를 정식 이름으로 정리했다.
+- generic 조문 오탐을 줄이기 위해 relevance 조정을 여러 차례 손봤다.
+- 최근에는 `위반`, `과태료`, `처벌`, `벌칙`, `제재` 표현을:
+  - illegality intent
+  - clause scan trigger
+  양쪽에 포함시켰다.
+
+의미:
+- `문자 광고 수신거부를 했는데 계속 오면 위반이야?` 같은 질문에서 조문 스캔 자체가 꺼지는 문제를 막았다.
+
+---
+
+## 11. 골든 질문 세트
+- 문서:
+  - `docs/golden-question-set.md`
+- 자동 회귀 테스트:
+  - `tests/test_golden_question_set.py`
+
+현재 대표 질문군:
+- 주민등록번호 동의 처리 질문
+- 민감정보 동의 처리 질문
+- 고유식별정보 처리 질문
+- 학교밖청소년지원센터 주민등록번호 질문
+- 노인일자리법 고유식별정보 질문
+- 아파트 관리업체 주민정보 질문
+- 동의 철회/제재 질문의 privacy category 분류
+- 문자/온라인 광고 법적 근거 정리 질문
+- 특정 조문 해석 질문
+- 문자 광고 수신거부 후 재전송 질문
+
+운영 원칙:
+- 새 버그를 고칠 때는 가능하면 해당 질문을 골든 세트 또는 인접 회귀 테스트에 추가한다.
+- 골든 세트는 문서가 아니라 실제 회귀 기준으로 사용한다.
+
+---
+
+## 12. 현재 상태 평가
+현재 구현 상태는 다음과 같이 정리한다.
+
+완료된 것:
+- 공통 MCP 코어
+- grounded retrieval 파이프라인
+- question_law_scope / clarification / answer_plan / privacy_analysis
+- 개인정보 질문 보강
+- framework_overview 모드
+- framework 프로필 외부화
+- 골든 질문 세트 및 자동 회귀 테스트
+
+진행 중인 것:
+- 넓은 법체계 질문에 대한 프로필 확장
+- 골든 질문 세트 확대
+- 운영 중 새 실패 케이스를 상위 분류로 흡수하는 작업
+
+보류 또는 우선순위 낮음:
+- suggestion 기능 고도화
+- 추가적인 자동 보정 시스템
+
+---
+
+## 최신 검증 결과
+- 골든 질문 세트: `Ran 10 tests / OK`
+- 전체 테스트: `Ran 155 tests / OK`
