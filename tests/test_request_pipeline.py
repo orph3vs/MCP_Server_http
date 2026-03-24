@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -1556,6 +1557,44 @@ def _patched_test_query_mode_keeps_single_basis_for_specific_article_question(se
 
 
 RequestPipelineTests.test_query_mode_keeps_single_basis_for_specific_article_question = _patched_test_query_mode_keeps_single_basis_for_specific_article_question
+
+
+def _patched_test_framework_law_profiles_can_load_from_external_file(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "framework_law_profiles.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "axis": "테스트 축",
+                        "law_family": "테스트 법률",
+                        "aspects": ["processing", "rights"],
+                        "article_numbers": ["제1조", "제2조"],
+                        "description": "테스트 설명",
+                    }
+                ],
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        original_path = RequestPipeline._FRAMEWORK_LAW_PROFILES_PATH
+        original_cache = RequestPipeline._framework_law_profiles_cache
+        try:
+            RequestPipeline._FRAMEWORK_LAW_PROFILES_PATH = path
+            RequestPipeline._framework_law_profiles_cache = None
+            profiles = RequestPipeline._framework_law_profiles()
+        finally:
+            RequestPipeline._FRAMEWORK_LAW_PROFILES_PATH = original_path
+            RequestPipeline._framework_law_profiles_cache = original_cache
+
+    self.assertEqual(len(profiles), 1)
+    self.assertEqual(profiles[0]["axis"], "테스트 축")
+    self.assertEqual(profiles[0]["law_family"], "테스트 법률")
+    self.assertEqual(tuple(profiles[0]["article_numbers"]), ("제1조", "제2조"))
+
+
+RequestPipelineTests.test_framework_law_profiles_can_load_from_external_file = _patched_test_framework_law_profiles_can_load_from_external_file
 
 
 def _patched_test_build_framework_axes_uses_multiple_law_families(self):

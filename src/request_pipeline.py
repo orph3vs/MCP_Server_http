@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
@@ -398,6 +400,9 @@ class RequestPipeline:
         "생년월일",
     )
 
+    _FRAMEWORK_LAW_PROFILES_PATH = Path(__file__).resolve().parent.parent / "config" / "framework_law_profiles.json"
+    _framework_law_profiles_cache: Optional[List[Dict[str, Any]]] = None
+
     def __init__(
         self,
         risk_classifier: Optional[RiskClassifier] = None,
@@ -680,6 +685,53 @@ class RequestPipeline:
         return adjustment
 
     @classmethod
+    def _framework_law_profiles(cls) -> List[Dict[str, Any]]:
+        cached = cls._framework_law_profiles_cache
+        if cached is not None:
+            return [dict(item) for item in cached]
+
+        profiles: List[Dict[str, Any]] = []
+        try:
+            raw = json.loads(cls._FRAMEWORK_LAW_PROFILES_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = None
+
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                axis = cls._clean_text(str(item.get("axis") or ""))
+                law_family = cls._law_family_name(cls._clean_text(str(item.get("law_family") or "")))
+                description = cls._clean_text(str(item.get("description") or ""))
+                aspects = tuple(
+                    cls._clean_text(str(aspect)).lower()
+                    for aspect in item.get("aspects", [])
+                    if cls._clean_text(str(aspect))
+                )
+                article_numbers = tuple(
+                    cls._clean_text(str(article_no))
+                    for article_no in item.get("article_numbers", [])
+                    if cls._clean_text(str(article_no))
+                )
+                if not axis or not law_family or not aspects:
+                    continue
+                profiles.append(
+                    {
+                        "axis": axis,
+                        "law_family": law_family,
+                        "aspects": aspects,
+                        "article_numbers": article_numbers,
+                        "description": description,
+                    }
+                )
+
+        if not profiles:
+            profiles = [dict(item) for item in cls._GENERAL_FRAMEWORK_LAW_PROFILES]
+
+        cls._framework_law_profiles_cache = profiles
+        return [dict(item) for item in profiles]
+
+    @classmethod
     def _framework_aspects(cls, user_query: str) -> List[str]:
         normalized = cls._clean_text(user_query).lower()
         return [
@@ -699,7 +751,7 @@ class RequestPipeline:
 
         return [
             dict(profile)
-            for profile in cls._GENERAL_FRAMEWORK_LAW_PROFILES
+            for profile in cls._framework_law_profiles()
             if aspects.intersection(profile["aspects"])
         ]
 
