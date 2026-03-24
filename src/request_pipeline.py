@@ -95,6 +95,11 @@ class RequestPipeline:
         "동의",
         "적용",
         "제외",
+        "위반",
+        "과태료",
+        "처벌",
+        "벌칙",
+        "제재",
     )
 
     _RELATED_LAW_HINTS = {
@@ -148,7 +153,7 @@ class RequestPipeline:
         "difference": ("차이", "구분", "비교", "다른 점"),
         "requirements": ("요건", "조건", "기준", "해당", "충족"),
         "procedure": ("절차", "방법", "순서", "어떻게", "진행"),
-        "illegality": ("위법", "불법", "허용", "가능한지", "문제되는지", "판단"),
+        "illegality": ("위법", "불법", "위반", "처벌", "벌칙", "과태료", "제재", "허용", "가능한지", "문제되는지", "판단"),
         "applicability": ("적용", "대상", "포함", "제외"),
     }
     _PRECEDENT_REQUEST_KEYWORDS = (
@@ -708,6 +713,16 @@ class RequestPipeline:
                     for aspect in item.get("aspects", [])
                     if cls._clean_text(str(aspect))
                 )
+                match_aspects = tuple(
+                    cls._clean_text(str(aspect)).lower()
+                    for aspect in item.get("match_aspects", [])
+                    if cls._clean_text(str(aspect))
+                )
+                match_terms = tuple(
+                    cls._clean_text(str(term)).lower()
+                    for term in item.get("match_terms", [])
+                    if cls._clean_text(str(term))
+                )
                 article_numbers = tuple(
                     cls._clean_text(str(article_no))
                     for article_no in item.get("article_numbers", [])
@@ -720,6 +735,8 @@ class RequestPipeline:
                         "axis": axis,
                         "law_family": law_family,
                         "aspects": aspects,
+                        "match_aspects": match_aspects,
+                        "match_terms": match_terms,
                         "article_numbers": article_numbers,
                         "description": description,
                     }
@@ -752,12 +769,33 @@ class RequestPipeline:
         return [
             dict(profile)
             for profile in cls._framework_law_profiles()
-            if aspects.intersection(profile["aspects"])
+            if aspects.intersection(profile.get("match_aspects") or profile["aspects"])
         ]
 
     @classmethod
     def _framework_related_law_queries(cls, user_query: str) -> List[str]:
-        return [spec["law_family"] for spec in cls._framework_axis_specs(user_query)]
+        normalized = cls._clean_text(user_query).lower()
+        aspects = set(cls._framework_aspects(user_query))
+        queries: List[str] = [spec["law_family"] for spec in cls._framework_axis_specs(user_query)]
+
+        for profile in cls._framework_law_profiles():
+            match_terms = tuple(profile.get("match_terms") or ())
+            if match_terms and not any(term in normalized for term in match_terms):
+                continue
+            match_aspects = set(profile.get("match_aspects") or profile["aspects"])
+            if aspects and match_aspects and not aspects.intersection(match_aspects):
+                continue
+            law_family = cls._clean_text(str(profile.get("law_family") or ""))
+            if law_family:
+                queries.append(law_family)
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            if query and query not in seen:
+                seen.add(query)
+                deduped.append(query)
+        return deduped
 
     @classmethod
     def _query_mode(cls, user_query: str) -> str:
@@ -1058,6 +1096,34 @@ class RequestPipeline:
             if actor_marker_mismatch and not actor_marker_overlap:
                 adjustment -= 12
         return adjustment
+
+    @classmethod
+    def _framework_profile_relevance_adjustment(
+        cls,
+        *,
+        user_query: str,
+        law_name: str,
+    ) -> int:
+        aspects = set(cls._framework_aspects(user_query))
+        if not aspects:
+            return 0
+
+        normalized_query = cls._clean_text(user_query).lower()
+        target_family = cls._law_family_name(law_name)
+        best_adjustment = 0
+
+        for profile in cls._framework_law_profiles():
+            if cls._law_family_name(str(profile.get("law_family") or "")) != target_family:
+                continue
+            match_terms = tuple(profile.get("match_terms") or ())
+            if match_terms and not any(term in normalized_query for term in match_terms):
+                continue
+            profile_aspects = set(profile.get("aspects") or ())
+            overlap = len(aspects.intersection(profile_aspects))
+            if overlap:
+                best_adjustment = max(best_adjustment, overlap * 5)
+
+        return best_adjustment
 
     @classmethod
     def _candidate_law_references(cls, user_query: str) -> List[str]:
@@ -2029,7 +2095,15 @@ class RequestPipeline:
         for law_name, hints in cls._RELATED_LAW_HINTS.items():
             if any(hint.lower() in normalized for hint in hints):
                 queries.append(law_name)
-        return queries
+        queries.extend(cls._framework_related_law_queries(user_query))
+
+        deduped: List[str] = []
+        seen = set()
+        for query in queries:
+            if query and query not in seen:
+                seen.add(query)
+                deduped.append(query)
+        return deduped
 
     @classmethod
     def _merge_law_results(cls, datasets: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2175,6 +2249,10 @@ class RequestPipeline:
             user_query=normalized_query,
             law_name=law_name,
             related_law_queries=related_law_queries,
+        )
+        score += cls._framework_profile_relevance_adjustment(
+            user_query=normalized_query,
+            law_name=law_name,
         )
 
         return score
@@ -2435,6 +2513,10 @@ class RequestPipeline:
                     law_name=law_name,
                     article_text=str(matched.get("article_text") or ""),
                     related_law_queries=self._resolved_related_law_queries(user_query),
+                )
+                total_score += self._framework_profile_relevance_adjustment(
+                    user_query=user_query,
+                    law_name=law_name,
                 )
                 total_score += self._privacy_category_relevance_adjustment(
                     user_query=user_query,

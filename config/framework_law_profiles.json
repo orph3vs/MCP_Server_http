@@ -3,6 +3,7 @@
     "axis": "광고성 정보 전송 규제",
     "law_family": "정보통신망 이용촉진 및 정보보호 등에 관한 법률",
     "aspects": ["transmission", "rights", "sanction"],
+    "match_terms": ["광고", "문자", "이메일", "메신저", "푸시", "수신거부", "수신동의", "동의철회"],
     "article_numbers": ["제50조"],
     "description": "문자, 이메일, 메신저, 푸시 같은 전자적 광고성 정보 전송 기준을 다룹니다."
   },
@@ -10,6 +11,8 @@
     "axis": "광고 목적 개인정보 활용",
     "law_family": "개인정보 보호법",
     "aspects": ["processing", "rights"],
+    "match_aspects": ["transmission", "processing", "rights", "representation", "commerce"],
+    "match_terms": ["광고", "문자", "온라인 광고", "이메일", "메신저", "수신거부", "수신동의", "동의철회"],
     "article_numbers": ["제15조", "제17조", "제22조", "제37조", "제38조"],
     "description": "연락처 수집·이용·제공, 동의, 수신거부·동의철회 같은 정보주체 권리를 다룹니다."
   },
@@ -17,6 +20,7 @@
     "axis": "광고 내용/표시 규제",
     "law_family": "표시ㆍ광고의 공정화에 관한 법률",
     "aspects": ["representation", "sanction"],
+    "match_terms": ["광고", "온라인 광고", "배너", "랜딩페이지", "SNS", "표시", "과장", "기만"],
     "article_numbers": ["제3조"],
     "description": "거짓·과장·기만 광고처럼 광고 내용 자체의 위법성을 다룹니다."
   },
@@ -24,6 +28,7 @@
     "axis": "통신판매/소비자 유인 규제",
     "law_family": "전자상거래 등에서의 소비자보호에 관한 법률",
     "aspects": ["commerce", "representation", "sanction"],
+    "match_terms": ["광고", "온라인 광고", "쇼핑몰", "통신판매", "소비자", "유인"],
     "article_numbers": ["제21조"],
     "description": "통신판매 또는 소비자 유인 과정의 금지행위를 다룹니다."
   }
