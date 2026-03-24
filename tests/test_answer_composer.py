@@ -766,5 +766,91 @@ def _patched_test_privacy_analysis_includes_sensitive_info_rule(self):
 AnswerComposerTests.test_privacy_analysis_includes_sensitive_info_rule = _patched_test_privacy_analysis_includes_sensitive_info_rule
 
 
+def _patched_test_build_plan_exposes_privacy_categories(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="동의 철회 방법을 어렵게 하면 과태료가 있나?",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "primary_law": {"law_name": "개인정보 보호법"},
+                "version": {"version_fields": {}},
+                "article": {
+                    "found": True,
+                    "article_no": "제39조",
+                    "article_text": "제39조(동의의 철회 등) 정보주체는 동의를 철회할 수 있다.",
+                },
+                "related_articles": [],
+            },
+            risk_level="HIGH",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertEqual(
+        plan.privacy_categories,
+        ["정보주체 권리", "절차/방법", "제재/책임"],
+    )
+    structured = self.composer.plan_as_dict(plan)
+    self.assertEqual(
+        structured["privacy_categories"],
+        ["정보주체 권리", "절차/방법", "제재/책임"],
+    )
+
+
+AnswerComposerTests.test_build_plan_exposes_privacy_categories = _patched_test_build_plan_exposes_privacy_categories
+
+
+def _patched_test_build_plan_and_render_framework_overview(self):
+    plan = self.composer.build_plan(
+        AnswerCompositionInput(
+            user_query="문자 광고나 온라인 광고에 관련된 법적 근거를 알려줘",
+            prompt_payload=PROMPT_PAYLOAD,
+            law_enrichment={
+                "query_mode": "framework_overview",
+                "framework_axes": [
+                    {
+                        "axis": "광고성 정보 전송 규제",
+                        "description": "문자, 이메일, 메신저 같은 전자적 광고성 정보 전송 기준을 다룹니다.",
+                        "law_name": "정보통신망 이용촉진 및 정보보호 등에 관한 법률",
+                        "law_link": "https://www.law.go.kr/법령/정보통신망이용촉진및정보보호등에관한법률",
+                        "articles": [{"article_no": "제50조"}],
+                    },
+                    {
+                        "axis": "광고 목적 개인정보 활용",
+                        "description": "연락처 수집·이용·제공과 동의 기준을 다룹니다.",
+                        "law_name": "개인정보 보호법",
+                        "law_link": "https://www.law.go.kr/법령/개인정보보호법",
+                        "articles": [{"article_no": "제15조"}, {"article_no": "제17조"}],
+                    },
+                ],
+                "primary_law": {"law_name": "개인정보 보호법"},
+                "version": {"version_fields": {}},
+                "article": {},
+                "related_articles": [],
+            },
+            risk_level="LOW",
+            fallback_answer="",
+            clarification=None,
+        )
+    )
+
+    self.assertEqual(plan.query_mode, "framework_overview")
+    self.assertEqual(len(plan.framework_axes), 2)
+
+    structured = self.composer.plan_as_dict(plan)
+    self.assertEqual(structured["query_mode"], "framework_overview")
+    self.assertEqual(len(structured["framework_axes"]), 2)
+    self.assertIsNone(structured["direct_basis"])
+
+    rendered = self.composer.render_plan(plan)
+    self.assertIn("[1. 광고성 정보 전송 규제]", rendered)
+    self.assertIn("정보통신망 이용촉진 및 정보보호 등에 관한 법률 제50조", rendered)
+    self.assertIn("[2. 광고 목적 개인정보 활용]", rendered)
+
+
+AnswerComposerTests.test_build_plan_and_render_framework_overview = _patched_test_build_plan_and_render_framework_overview
+
+
 if __name__ == "__main__":
     unittest.main()

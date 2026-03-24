@@ -1503,5 +1503,104 @@ def _patched_test_question_law_scope_updates_after_general_privacy_promotion(sel
 RequestPipelineTests.test_question_law_scope_updates_after_general_privacy_promotion = _patched_test_question_law_scope_updates_after_general_privacy_promotion
 
 
+def _patched_test_privacy_question_categories_detect_rights_procedure_and_sanction(self):
+    categories = RequestPipeline._privacy_question_categories(
+        "동의 철회 방법을 어렵게 하면 과태료가 있나?"
+    )
+
+    self.assertEqual(
+        categories,
+        ["정보주체 권리", "절차/방법", "제재/책임"],
+    )
+
+
+RequestPipelineTests.test_privacy_question_categories_detect_rights_procedure_and_sanction = _patched_test_privacy_question_categories_detect_rights_procedure_and_sanction
+
+
+def _patched_test_privacy_category_relevance_penalizes_generic_processing_article(self):
+    generic_score = RequestPipeline._privacy_category_relevance_adjustment(
+        user_query="동의 철회 방법을 어렵게 하면 과태료가 있나?",
+        law_name="개인정보 보호법 시행령",
+        article_text="제70조의2(고유식별정보의 처리) 보호위원회는 다음 각 호의 사무를 수행하기 위하여 불가피한 경우 ...",
+    )
+    sanction_score = RequestPipeline._privacy_category_relevance_adjustment(
+        user_query="동의 철회 방법을 어렵게 하면 과태료가 있나?",
+        law_name="개인정보 보호법",
+        article_text="제39조(동의의 철회 등) 정보주체는 동의를 철회할 수 있으며 ... 과태료 ...",
+    )
+
+    self.assertLess(generic_score, 0)
+    self.assertGreater(sanction_score, generic_score)
+
+
+RequestPipelineTests.test_privacy_category_relevance_penalizes_generic_processing_article = _patched_test_privacy_category_relevance_penalizes_generic_processing_article
+
+
+def _patched_test_query_mode_detects_framework_overview(self):
+    query_mode = RequestPipeline._query_mode("문자 광고나 온라인 광고에 관련된 법적 근거를 알려줘")
+    aspects = RequestPipeline._framework_aspects("문자 광고나 온라인 광고에 관련된 법적 근거를 알려줘")
+
+    self.assertEqual(query_mode, "framework_overview")
+    self.assertIn("transmission", aspects)
+    self.assertIn("representation", aspects)
+    self.assertIn("commerce", aspects)
+
+
+RequestPipelineTests.test_query_mode_detects_framework_overview = _patched_test_query_mode_detects_framework_overview
+
+
+def _patched_test_query_mode_keeps_single_basis_for_specific_article_question(self):
+    query_mode = RequestPipeline._query_mode("개인정보 보호법 제24조의2가 무슨 뜻이야?")
+
+    self.assertEqual(query_mode, "single_basis")
+
+
+RequestPipelineTests.test_query_mode_keeps_single_basis_for_specific_article_question = _patched_test_query_mode_keeps_single_basis_for_specific_article_question
+
+
+def _patched_test_build_framework_axes_uses_multiple_law_families(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        logger = CostLogger(db_path=str(Path(tmp) / "cost_logs.db"))
+        pipeline = RequestPipeline(law_api=FakeLawApiOk(), logger=logger)
+
+        def _fake_fetch_article(_law_id, article_no, _metrics=None):
+            return {
+                "found": True,
+                "article_no": article_no,
+                "article_base_no": article_no,
+                "article_text": f"{article_no} 관련 조문",
+            }
+
+        pipeline._fetch_article = _fake_fetch_article
+
+        law_data = {
+            "LawSearch": {
+                "law": [
+                    {"법령ID": "1", "법령명한글": "정보통신망 이용촉진 및 정보보호 등에 관한 법률"},
+                    {"법령ID": "2", "법령명한글": "개인정보 보호법"},
+                    {"법령ID": "3", "법령명한글": "표시ㆍ광고의 공정화에 관한 법률"},
+                    {"법령ID": "4", "법령명한글": "전자상거래 등에서의 소비자보호에 관한 법률"},
+                ]
+            }
+        }
+
+        axes = pipeline._build_framework_axes(
+            user_query="문자 광고나 온라인 광고에 관련된 법적 근거를 알려줘",
+            law_data=law_data,
+        )
+
+        self.assertGreaterEqual(len(axes), 2)
+        self.assertTrue(any(axis["law_name"] == "정보통신망 이용촉진 및 정보보호 등에 관한 법률" for axis in axes))
+        self.assertTrue(
+            any(
+                axis["law_name"] in {"표시ㆍ광고의 공정화에 관한 법률", "전자상거래 등에서의 소비자보호에 관한 법률"}
+                for axis in axes
+            )
+        )
+
+
+RequestPipelineTests.test_build_framework_axes_uses_multiple_law_families = _patched_test_build_framework_axes_uses_multiple_law_families
+
+
 if __name__ == "__main__":
     unittest.main()

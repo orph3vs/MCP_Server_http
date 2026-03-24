@@ -204,6 +204,143 @@ class RequestPipeline:
         "정보를 처리",
         "처리할 수",
     )
+    _PRIVACY_CATEGORY_KEYWORDS = {
+        "처리 근거": ("수집", "이용", "제공", "위탁", "받아도", "가능", "근거", "처리할 수"),
+        "정보주체 권리": ("동의 철회", "철회", "회원탈퇴", "탈퇴", "열람", "정정", "삭제", "처리정지", "거부"),
+        "절차/방법": ("방법", "절차", "어떻게", "쉽게", "동일하게", "고지", "안내", "경로", "수단"),
+        "제재/책임": ("과태료", "벌칙", "처벌", "제재", "시정명령", "위반하면", "손해배상"),
+        "적용 범위/주체": ("누가", "적용", "수탁자", "관리주체", "위탁받은", "사업자", "기관", "개인정보처리자"),
+    }
+    _PRIVACY_CATEGORY_GATE_KEYWORDS = (
+        "개인정보",
+        "민감정보",
+        "고유식별정보",
+        "주민등록번호",
+        "외국인등록번호",
+        "정보주체",
+        "동의",
+        "동의 철회",
+        "철회",
+        "회원탈퇴",
+        "탈퇴",
+        "열람",
+        "정정",
+        "삭제",
+        "처리정지",
+        "개인정보처리방침",
+        "처리방침",
+    )
+    _FRAMEWORK_OVERVIEW_KEYWORDS = (
+        "법적 근거",
+        "관련 법",
+        "관련법",
+        "어떤 법",
+        "무슨 법",
+        "정리",
+        "기준",
+        "체계",
+    )
+    _GENERAL_FRAMEWORK_ASPECT_KEYWORDS = {
+        "transmission": (
+            "문자",
+            "sms",
+            "lms",
+            "mms",
+            "이메일",
+            "메일",
+            "메신저",
+            "푸시",
+            "광고성 정보",
+            "전송",
+            "발송",
+        ),
+        "processing": (
+            "개인정보",
+            "연락처",
+            "전화번호",
+            "이메일 주소",
+            "수집",
+            "이용",
+            "활용",
+            "제공",
+            "광고 목적",
+            "동의",
+            "수신동의",
+            "db",
+        ),
+        "representation": (
+            "광고",
+            "표시",
+            "고지",
+            "배너",
+            "랜딩페이지",
+            "sns",
+            "기만",
+            "과장",
+            "비교광고",
+            "비방광고",
+            "광고 문구",
+        ),
+        "commerce": (
+            "온라인",
+            "쇼핑몰",
+            "통신판매",
+            "전자상거래",
+            "플랫폼",
+            "유인",
+            "청약철회",
+            "판매",
+            "거래",
+        ),
+        "rights": (
+            "수신거부",
+            "동의철회",
+            "동의 철회",
+            "회원탈퇴",
+            "철회",
+            "탈퇴",
+            "거부",
+        ),
+        "sanction": (
+            "과태료",
+            "벌칙",
+            "과징금",
+            "처벌",
+            "제재",
+            "시정명령",
+            "위반",
+        ),
+    }
+    _GENERAL_FRAMEWORK_LAW_PROFILES = (
+        {
+            "axis": "광고성 정보 전송 규제",
+            "law_family": "정보통신망 이용촉진 및 정보보호 등에 관한 법률",
+            "aspects": ("transmission", "rights", "sanction"),
+            "article_numbers": ("제50조",),
+            "description": "문자, 이메일, 메신저, 푸시 같은 전자적 광고성 정보 전송 기준을 다룹니다.",
+        },
+        {
+            "axis": "광고 목적 개인정보 활용",
+            "law_family": "개인정보 보호법",
+            "aspects": ("processing", "rights"),
+            "article_numbers": ("제15조", "제17조", "제22조", "제37조", "제38조"),
+            "description": "연락처 수집·이용·제공, 동의, 수신거부·동의철회 같은 정보주체 권리를 다룹니다.",
+        },
+        {
+            "axis": "광고 내용/표시 규제",
+            "law_family": "표시ㆍ광고의 공정화에 관한 법률",
+            "aspects": ("representation", "sanction"),
+            "article_numbers": ("제3조",),
+            "description": "거짓·과장·기만 등 광고 내용 자체의 위법성을 다룹니다.",
+        },
+        {
+            "axis": "통신판매/소비자 유인 규제",
+            "law_family": "전자상거래 등에서의 소비자보호에 관한 법률",
+            "aspects": ("commerce", "representation", "sanction"),
+            "article_numbers": ("제21조",),
+            "description": "통신판매와 소비자 유인 과정의 금지행위를 다룹니다.",
+        },
+    )
     _ACTOR_STATUS_KEYWORDS = (
         "업체",
         "기관",
@@ -470,6 +607,205 @@ class RequestPipeline:
             "law_name": str(law_name).strip() if law_name is not None else None,
             "raw": primary,
         }
+
+    @classmethod
+    def _privacy_question_categories(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        if not normalized:
+            return []
+        if not any(keyword in normalized for keyword in cls._PRIVACY_CATEGORY_GATE_KEYWORDS):
+            return []
+
+        ordered_categories = (
+            "처리 근거",
+            "정보주체 권리",
+            "절차/방법",
+            "제재/책임",
+            "적용 범위/주체",
+        )
+        return [
+            category
+            for category in ordered_categories
+            if any(keyword in normalized for keyword in cls._PRIVACY_CATEGORY_KEYWORDS[category])
+        ]
+
+    @classmethod
+    def _privacy_category_relevance_adjustment(
+        cls,
+        *,
+        user_query: str,
+        law_name: str,
+        article_text: str = "",
+    ) -> int:
+        categories = cls._privacy_question_categories(user_query)
+        if not categories:
+            return 0
+
+        haystack = cls._clean_text(f"{law_name} {article_text}")
+        adjustment = 0
+        generic_processing_markers = (
+            "고유식별정보의 처리",
+            "민감정보 및 고유식별정보의 처리",
+            "민감정보의 처리",
+            "개인정보의 안전성 확보 조치",
+            "개인정보 영향평가의 대상",
+        )
+        rights_or_sanction_markers = (
+            "동의의 철회",
+            "동의철회",
+            "회원탈퇴",
+            "처리정지",
+            "열람",
+            "정정",
+            "삭제",
+            "과태료",
+            "벌칙",
+            "시정명령",
+        )
+
+        if any(category in categories for category in ("정보주체 권리", "절차/방법", "제재/책임")):
+            if any(marker in haystack for marker in generic_processing_markers):
+                adjustment -= 10
+            if any(marker in haystack for marker in rights_or_sanction_markers):
+                adjustment += 12
+
+        if "처리 근거" in categories and any(marker in haystack for marker in generic_processing_markers[:3]):
+            adjustment += 4
+
+        if "적용 범위/주체" in categories and any(
+            marker in haystack for marker in ("수탁자", "관리주체", "위탁", "개인정보처리자")
+        ):
+            adjustment += 4
+
+        return adjustment
+
+    @classmethod
+    def _framework_aspects(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query).lower()
+        return [
+            aspect
+            for aspect, keywords in cls._GENERAL_FRAMEWORK_ASPECT_KEYWORDS.items()
+            if any(keyword.lower() in normalized for keyword in keywords)
+        ]
+
+    @classmethod
+    def _framework_axis_specs(cls, user_query: str) -> List[Dict[str, Any]]:
+        if cls._query_mode(user_query) != "framework_overview":
+            return []
+
+        aspects = set(cls._framework_aspects(user_query))
+        if not aspects:
+            return []
+
+        return [
+            dict(profile)
+            for profile in cls._GENERAL_FRAMEWORK_LAW_PROFILES
+            if aspects.intersection(profile["aspects"])
+        ]
+
+    @classmethod
+    def _framework_related_law_queries(cls, user_query: str) -> List[str]:
+        return [spec["law_family"] for spec in cls._framework_axis_specs(user_query)]
+
+    @classmethod
+    def _query_mode(cls, user_query: str) -> str:
+        normalized = cls._clean_text(user_query)
+        if not normalized:
+            return "single_basis"
+        if cls._extract_article_numbers(normalized):
+            return "single_basis"
+        if cls._explicit_law_reference(normalized):
+            return "single_basis"
+        if not any(keyword in normalized for keyword in cls._FRAMEWORK_OVERVIEW_KEYWORDS):
+            return "single_basis"
+        if len(cls._framework_aspects(normalized)) >= 2:
+            return "framework_overview"
+        return "single_basis"
+
+    def _build_framework_axes(
+        self,
+        *,
+        user_query: str,
+        law_data: Dict[str, Any],
+        metrics: Optional[Dict[str, int]] = None,
+    ) -> List[Dict[str, Any]]:
+        specs = self._framework_axis_specs(user_query)
+        if not specs:
+            return []
+
+        items = self._extract_law_items(law_data)
+        if not items:
+            return []
+
+        axes: List[Dict[str, Any]] = []
+        for spec in specs:
+            matched_item = next(
+                (
+                    item
+                    for item in items
+                    if self._law_family_name(
+                        self._clean_text(
+                            str(
+                                item.get("법령명한글")
+                                or item.get("법령명한글_상세")
+                                or item.get("법령명")
+                                or item.get("name")
+                                or ""
+                            )
+                        )
+                    )
+                    == spec["law_family"]
+                ),
+                None,
+            )
+            if matched_item is None:
+                continue
+
+            law_id = matched_item.get("법령ID") or matched_item.get("법령일련번호") or matched_item.get("id")
+            law_name = self._clean_text(
+                str(
+                    matched_item.get("법령명한글")
+                    or matched_item.get("법령명한글_상세")
+                    or matched_item.get("법령명")
+                    or matched_item.get("name")
+                    or ""
+                )
+            )
+            articles: List[Dict[str, Any]] = []
+            for article_no in spec["article_numbers"]:
+                fetched = {}
+                if law_id:
+                    fetched = self._fetch_article(str(law_id), article_no, metrics)
+                if fetched and fetched.get("found"):
+                    articles.append(
+                        {
+                            "article_no": fetched.get("article_no") or article_no,
+                            "article_text_excerpt": self._truncate_text(str(fetched.get("article_text", "")), 140),
+                            "article_link": self._item_public_law_link(
+                                matched_item,
+                                fetched.get("article_base_no") or fetched.get("article_no") or article_no,
+                            ),
+                        }
+                    )
+                else:
+                    articles.append(
+                        {
+                            "article_no": article_no,
+                            "article_text_excerpt": "",
+                            "article_link": self._item_public_law_link(matched_item, article_no),
+                        }
+                    )
+
+            axes.append(
+                {
+                    "axis": spec["axis"],
+                    "description": spec["description"],
+                    "law_name": law_name,
+                    "law_link": self._item_public_law_link(matched_item),
+                    "articles": articles,
+                }
+            )
+        return axes
 
     @classmethod
     def _question_intent(cls, user_query: str) -> str:
@@ -1411,6 +1747,10 @@ class RequestPipeline:
     def _analyze_law_search(self, user_query: str) -> LawSearchAnalysis:
         issue_terms = self._extract_issue_query_terms(user_query)
         related_law_queries = self._resolved_related_law_queries(user_query)
+        if self._query_mode(user_query) == "framework_overview":
+            related_law_queries = list(
+                dict.fromkeys(related_law_queries + self._framework_related_law_queries(user_query))
+            )
         search_queries = self._law_search_queries(
             user_query,
             related_law_queries=related_law_queries,
@@ -2044,6 +2384,11 @@ class RequestPipeline:
                     article_text=str(matched.get("article_text") or ""),
                     related_law_queries=self._resolved_related_law_queries(user_query),
                 )
+                total_score += self._privacy_category_relevance_adjustment(
+                    user_query=user_query,
+                    law_name=law_name,
+                    article_text=str(matched.get("article_text") or ""),
+                )
                 if total_score > best_total_score:
                     best_total_score = total_score
                     best_match = matched
@@ -2334,6 +2679,14 @@ class RequestPipeline:
         )
         if question_law_scope:
             enrichment["question_law_scope"] = question_law_scope
+        framework_axes = self._build_framework_axes(
+            user_query=user_query,
+            law_data=law_data,
+            metrics=metrics,
+        )
+        if framework_axes:
+            enrichment["query_mode"] = "framework_overview"
+            enrichment["framework_axes"] = framework_axes
         related_laws = []
         for item in all_laws[1:6]:
             law_id = item.get("법령ID") or item.get("법령일련번호") or item.get("id")
@@ -2675,8 +3028,11 @@ class RequestPipeline:
             }
 
         return {
+            "query_mode": enrichment.get("query_mode", "single_basis"),
+            "framework_axes": enrichment.get("framework_axes", []),
             "search_queries": enrichment.get("search_queries", []),
             "related_law_queries": enrichment.get("related_law_queries", []),
+            "privacy_categories": enrichment.get("privacy_categories", []),
             "used_search_query": enrichment.get("used_search_query"),
             "precedent_search_queries": enrichment.get("precedent_search_queries", []),
             "used_precedent_query": enrichment.get("used_precedent_query"),
@@ -2863,6 +3219,10 @@ class RequestPipeline:
             law_enrichment["related_law_queries"] = related_law_queries
             law_enrichment["used_search_query"] = used_search_query
             law_enrichment["prompt_policy"] = prompt_policy.as_dict()
+            law_enrichment.setdefault("query_mode", "single_basis")
+            privacy_categories = self._privacy_question_categories(req.user_query)
+            if privacy_categories:
+                law_enrichment["privacy_categories"] = privacy_categories
             explicit_question_law = self._explicit_law_reference(req.user_query)
             question_law_scope = law_enrichment.get("question_law_scope") or {}
             if not question_law_scope and explicit_question_law:

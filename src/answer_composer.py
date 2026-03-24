@@ -23,6 +23,7 @@ class AnswerPlan:
     user_query: str
     intent: str
     risk_level: str
+    query_mode: str
     law_name: str
     law_link: Optional[str]
     article_found: bool
@@ -51,6 +52,8 @@ class AnswerPlan:
     require_confirmation_when_unclear: bool
     question_scope: Dict[str, Any]
     supplementary_basis: Optional[Dict[str, Any]]
+    framework_axes: List[Dict[str, Any]]
+    privacy_categories: List[str]
     privacy_processing_question: bool
     processing_actions: List[str]
     privacy_analysis: Optional[Dict[str, Any]]
@@ -88,6 +91,32 @@ class AnswerComposer:
         "위탁": ("위탁", "수탁", "맡기", "관리업체", "외부업체"),
         "목적 외 이용·제공": ("목적 외", "다른 용도", "2차 활용"),
     }
+    _PRIVACY_CATEGORY_KEYWORDS = {
+        "처리 근거": ("수집", "이용", "제공", "위탁", "받아도", "가능", "근거", "처리할 수"),
+        "정보주체 권리": ("동의 철회", "철회", "회원탈퇴", "탈퇴", "열람", "정정", "삭제", "처리정지", "거부"),
+        "절차/방법": ("방법", "절차", "어떻게", "쉽게", "동일하게", "고지", "안내", "경로", "수단"),
+        "제재/책임": ("과태료", "벌칙", "처벌", "제재", "시정명령", "위반하면", "손해배상"),
+        "적용 범위/주체": ("누가", "적용", "수탁자", "관리주체", "위탁받은", "사업자", "기관", "개인정보처리자"),
+    }
+    _PRIVACY_CATEGORY_GATE_KEYWORDS = (
+        "개인정보",
+        "민감정보",
+        "고유식별정보",
+        "주민등록번호",
+        "외국인등록번호",
+        "정보주체",
+        "동의",
+        "동의 철회",
+        "철회",
+        "회원탈퇴",
+        "탈퇴",
+        "열람",
+        "정정",
+        "삭제",
+        "처리정지",
+        "개인정보처리방침",
+        "처리방침",
+    )
     _PRIVACY_PROCESSING_TOPIC_KEYWORDS = (
         "개인정보",
         "주민등록번호",
@@ -310,6 +339,33 @@ class AnswerComposer:
         if any(any(keyword in haystack for keyword in cls._PRIVACY_PROCESSING_TOPIC_KEYWORDS) for haystack in haystacks):
             return True
         return bool(cls._privacy_processing_actions(user_query, article_text, related_articles))
+
+    @classmethod
+    def _privacy_question_categories(cls, user_query: str) -> List[str]:
+        normalized = cls._clean_text(user_query)
+        if not normalized:
+            return []
+
+        privacy_gate = any(keyword in normalized for keyword in cls._PRIVACY_CATEGORY_GATE_KEYWORDS)
+        if not privacy_gate:
+            return []
+
+        matched = {
+            label
+            for label, keywords in cls._PRIVACY_CATEGORY_KEYWORDS.items()
+            if any(keyword in normalized for keyword in keywords)
+        }
+        if not matched and any(keyword in normalized for keyword in cls._PRIVACY_PROCESSING_TOPIC_KEYWORDS):
+            matched.add("처리 근거")
+
+        ordered_labels = [
+            "정보주체 권리",
+            "절차/방법",
+            "제재/책임",
+            "적용 범위/주체",
+            "처리 근거",
+        ]
+        return [label for label in ordered_labels if label in matched]
 
     @classmethod
     def _privacy_processing_summary(
@@ -986,6 +1042,8 @@ class AnswerComposer:
         return None
 
     def render_plan(self, plan: AnswerPlan) -> str:
+        if plan.query_mode == "framework_overview" and plan.framework_axes:
+            return self._render_framework_overview_plan(plan)
         if plan.law_name and plan.article_found:
             return self._render_grounded_article_plan(plan)
         if plan.law_name:
@@ -1003,6 +1061,8 @@ class AnswerComposer:
         return {
             "intent": plan.intent,
             "risk_level": plan.risk_level,
+            "query_mode": plan.query_mode,
+            "framework_axes": plan.framework_axes,
             "direct_basis": {
                 "law_name": plan.law_name or None,
                 "article_no": plan.article_no or None,
@@ -1010,10 +1070,11 @@ class AnswerComposer:
                 "clause_labels": plan.clause_labels,
                 "found": plan.article_found,
             }
-            if plan.law_name
+            if plan.law_name and plan.query_mode != "framework_overview"
             else None,
             "question_law_scope": question_scope,
             "supplementary_basis": plan.supplementary_basis,
+            "privacy_categories": plan.privacy_categories,
             "privacy_processing_question": plan.privacy_processing_question,
             "processing_actions": plan.processing_actions,
             "privacy_analysis": plan.privacy_analysis,
@@ -1041,6 +1102,9 @@ class AnswerComposer:
         article_title = self._extract_article_title(article_text) if article_text else None
         intent = self._question_intent(composition_input.user_query)
         clause_labels = self._matched_clause_labels(matched_clauses)
+        query_mode = str(law_enrichment.get("query_mode") or "single_basis")
+        framework_axes = list(law_enrichment.get("framework_axes") or [])
+        privacy_categories = list(law_enrichment.get("privacy_categories") or self._privacy_question_categories(composition_input.user_query))
         processing_actions = self._privacy_processing_actions(
             composition_input.user_query,
             article_text,
@@ -1051,7 +1115,7 @@ class AnswerComposer:
             law_name,
             article_text,
             related_articles,
-        )
+        ) or bool(privacy_categories)
 
         clause_summary_block = None
         if clause_labels:
@@ -1111,6 +1175,7 @@ class AnswerComposer:
             user_query=composition_input.user_query,
             intent=intent,
             risk_level=composition_input.risk_level,
+            query_mode=query_mode,
             law_name=law_name,
             law_link=law_link,
             article_found=bool(article.get("found") and article_text and article_no),
@@ -1139,11 +1204,46 @@ class AnswerComposer:
             require_confirmation_when_unclear=prompt_rules.require_confirmation_when_unclear,
             question_scope=question_scope,
             supplementary_basis=supplementary_basis,
+            framework_axes=framework_axes,
+            privacy_categories=privacy_categories,
             privacy_processing_question=privacy_processing_question,
             processing_actions=processing_actions,
             privacy_analysis=privacy_analysis,
             clarification=composition_input.clarification,
         )
+
+    def _render_framework_overview_plan(self, plan: AnswerPlan) -> str:
+        lines: List[str] = ["[결론]"]
+        lines.append("이 질문은 하나의 조문보다 관련 법 체계를 나눠서 보는 편이 정확합니다.")
+
+        for index, axis in enumerate(plan.framework_axes, start=1):
+            axis_name = self._clean_text(str(axis.get("axis") or f"축 {index}"))
+            lines.append("")
+            lines.append(f"[{index}. {axis_name}]")
+            description = self._clean_text(str(axis.get("description") or ""))
+            if description:
+                lines.append(description)
+
+            law_name = self._clean_text(str(axis.get("law_name") or ""))
+            law_link = self._sanitize_link_for_display(axis.get("law_link"))
+            article_labels = [
+                self._clean_text(str(article.get("article_no") or ""))
+                for article in (axis.get("articles") or [])
+                if isinstance(article, dict) and article.get("article_no")
+            ]
+            if law_name:
+                if article_labels:
+                    lines.append(f"주요 근거: {law_name} {', '.join(article_labels)}")
+                else:
+                    lines.append(f"주요 근거: {law_name}")
+            if law_link:
+                lines.append(f"법령 링크: {law_link}")
+
+        if plan.tail_guidance:
+            lines.extend(["", plan.tail_guidance])
+        if plan.clarification_block:
+            lines.extend(["", plan.clarification_block])
+        return "\n".join(lines).strip()
 
     def _render_grounded_article_plan(self, plan: AnswerPlan) -> str:
         lead_sentence = self._lead_sentence(plan.user_query, plan.law_name, plan.article_no, plan.article_title)
